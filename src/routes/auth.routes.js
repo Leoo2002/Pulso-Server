@@ -9,8 +9,6 @@ const { supabase } = require('../config/database');
 router.post('/login', async (req, res) => {
   const { token } = req.body;
 
-  console.log("\uD83D\uDD0D JWT_SECRET:", process.env.JWT_SECRET ? "\u2705 Configurado" : "\u274C No configurado");
-
   try {
     const payload = await verifyGoogleToken(token);
     console.log('Payload verificado');
