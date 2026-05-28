@@ -1,0 +1,47 @@
+1️⃣ Cliente envía POST /api/programacion/upload
+   └── Headers: { Authorization: "Bearer JWT_TOKEN" }
+   └── Body: { file: excel_binario }
+         │
+         ▼
+2️⃣ Llega a server.js
+   └── Pasa por middlewares globales:
+       ├── cookieParser() ✅
+       ├── cors() ✅
+       └── express.json() ✅
+         │
+         ▼
+3️⃣ Middleware JWT en /api/*
+   └── jwt-validation.js verifica el token
+       ├── ❌ Token inválido → 401 Unauthorized
+       └── ✅ Token válido → Continúa
+         │
+         ▼
+4️⃣ Router programacion.routes.js
+   └── Identifica endpoint POST /upload
+   └── Llama al handler correspondiente
+         │
+         ▼
+5️⃣ Service excel.service.js
+   └── Lee el archivo Excel con XLSX
+   └── Procesa fila por fila
+   └── Valida formato y datos
+         │
+         ▼
+6️⃣ Config database.js
+   └── Inserta datos procesados en Supabase
+   └── Usando supabase.from('programacion').insert()
+         │
+         ▼
+7️⃣ Respuesta al Cliente
+   └── 200 OK { mensaje: "Programación cargada exitosamente" }
+
+
+
+
+
+
+
+
+
+
+   

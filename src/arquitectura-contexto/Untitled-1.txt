@@ -1,0 +1,52 @@
+servidor/
+│
+├── 📄 server.js                          # 🚀 PUNTO DE ENTRADA - Servidor Express principal
+│   └─── Configura middlewares globales (CORS, cookies, JSON)
+│   └─── Registra todas las rutas (públicas y protegidas)
+│   └─── Aplica JWT selectivamente solo a rutas protegidas
+│
+├── 📄 .env                               # 🔐 Variables de entorno (credenciales)
+│   └─── SUPABASE_URL, SUPABASE_KEY, JWT_SECRET, etc.
+│
+├── 📄 package.json                       # 📦 Dependencias del proyecto
+│   └─── express, cors, jsonwebtoken, dotenv, xlsx, pdfkit, etc.
+│
+└── 📂 src/                               # 🏗️ CÓDIGO FUENTE PRINCIPAL
+    │
+    ├── 📂 config/                        # ⚙️ CONFIGURACIONES GLOBALES
+    │   ├── database.js                   # 🗄️ Cliente Supabase + constantes API
+    │   └── cors.js                       # 🌐 Configuración CORS (orígenes permitidos)
+    │
+    ├── 📂 middlewares/                   # 🛡️ MIDDLEWARES DE LA APP
+    │   └── jwt-validation.js             # 🔑 Validación de tokens JWT
+    │
+    ├── 📂 routes/                        # 🛣️ DEFINICIÓN DE ENDPOINTS
+    │   ├── auth.routes.js                # 🔐 Login, logout, validación de acceso
+    │   ├── agentes.routes.js             # 👥 CRUD de agentes/usuarios
+    │   ├── cambios.routes.js             # 🔄 Gestión de cambios de turno
+    │   ├── programacion.routes.js        # 📅 Programación de horarios (Excel)
+    │   ├── nomina.routes.js              # 💰 Servicios de nómina
+    │   ├── metricas.routes.js            # 📊 KPIs y métricas de producción
+    │   ├── pdf.routes.js                 # 📄 Generación de PDFs
+    │   └── historico-guardia.routes.js   # 📜 Histórico de guardias
+    │
+    ├── 📂 services/                      # 🔧 LÓGICA DE NEGOCIO
+    │   ├── pdf.service.js                # 📄 Generación de PDFs con PDFKit
+    │   ├── excel.service.js              # 📊 Procesamiento de Excel (XLSX)
+    │   ├── historico-guardia.service.js  # 📜 Lógica de histórico de guardias
+    │   └── metricas.service.js           # 📈 Cálculo de métricas/KPIs
+    │
+    ├── 📂 controllers/                   # 🎮 CONTROLADORES (si existen)
+    │   └── (Lógica que coordina rutas y servicios)
+    │
+    ├── 📂 utils/                         # 🛠️ UTILIDADES Y HELPERS
+    │   ├── date-formatter.js             # 📅 Formateo de fechas
+    │   ├── validators.js                 # ✅ Validaciones de datos
+    │   └── error-handler.js              # ❌ Manejo de errores
+    │
+    └── 📂 models/                        # 📐 MODELOS DE DATOS (si existen)
+        └── (Esquemas de validación o estructuras)
+
+
+
+        
