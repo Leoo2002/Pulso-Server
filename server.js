@@ -9,6 +9,8 @@ const corsOptions = require('./src/config/cors');
 
 // Importar middlewares
 const jwtValidationMiddleware = require('./src/middlewares/jwt-validation');
+const { globalLimiter, authLimiter, apiLimiter, heavyLimiter } = require('./src/middlewares/rate-limit');
+const { logSecurityEvents, validateQueryParams, validateRequestBody } = require('./src/middlewares/security-validation.middleware');
 
 // Importar servicios de histórico de guardia (legacy - funcionan correctamente)
 const { 
@@ -36,7 +38,37 @@ const port = process.env.PORT || 5000;
 // Configuración de middlewares globales
 app.use(cookieParser());
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(express.json({ limit: '10kb' }));
+
+// ────────────────────────────────────────────────────────────────────────────
+// 🔐 MIDDLEWARES DE SEGURIDAD (XSS + SQL Injection)
+// ────────────────────────────────────────────────────────────────────────────
+app.use(logSecurityEvents);           // Log de eventos de seguridad
+app.use(validateQueryParams);         // Valida parámetros de URL
+app.use(validateRequestBody);         // Valida campos de texto en body
+
+// ─── Rate Limiting ──────────────────────────────────────────────────────────
+// Se aplica antes del JWT para frenar peticiones abusivas lo más temprano posible.
+
+// Límite global de seguridad: aplica a todas las rutas
+app.use(globalLimiter);
+
+// Límite estricto en rutas de autenticación (anti-fuerza bruta)
+app.use('/auth/login', authLimiter);
+app.use('/auth/acceso-especial', authLimiter);
+
+// Límite moderado en toda la API protegida
+app.use('/api', apiLimiter);
+app.use('/auth/validar-acceso', apiLimiter);
+app.use('/auth/recargar-storage', apiLimiter);
+
+// Límite estricto para operaciones costosas (generación de archivos / carga masiva)
+app.use('/api/pdf', heavyLimiter);
+app.use('/api/cargarProgra', heavyLimiter);
+app.use('/api/produDiaria', heavyLimiter);
+app.use('/api/kpi', heavyLimiter);
+
+// ────────────────────────────────────────────────────────────────────────────
 
 // Iniciar servidor
 app.listen(port, () => {

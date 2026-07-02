@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
 const { registerFuncionesExtra } = require('../services/funciones_extra.service');
+const { validateEmailRangoRequest } = require('../middlewares/security-validation.middleware');
 
 // Obtener nombres y DNI de los líderes
 router.get("/lideres", async (req, res) => {
@@ -72,48 +73,56 @@ router.get("/feriado", async (req, res) => {
 });
 
 // Obtener rango por email
-router.get("/email/rango", async (req, res) => {
-  console.log("Query mail recibido:", req.query);
+router.get("/email/rango",
+  validateEmailRangoRequest,  // ✅ Validar email
+  async (req, res) => {
+    try {
+      const email = req.validatedData.email;  // ✅ Email ya validado
 
-  const email = req.query.mail;
+      console.log(`📧 Obteniendo rango para email: ${email}`);
 
-  try {
-    let { data, error } = await supabase.rpc('getrango', { mail: email });
+      let { data, error } = await supabase.rpc('getrango', { mail: email });
 
-    if (error) {
-      console.error("Error en la consulta:", error);
-      return res.status(500).json({ error: "Error al obtener datos" });
+      if (error) {
+        console.error("❌ Error en la consulta:", error);
+        return res.status(500).json({ error: "Error al obtener datos" });
+      }
+
+      console.log("✅ Datos obtenidos:", data);
+      res.json({ success: true, data: data });
+
+    } catch (error) {
+      console.error("❌ Error en el servidor:", error);
+      res.status(500).json({ error: "Error en el servidor" });
     }
-
-    console.log("Datos obtenidos:", data);
-    res.json(data);
-
-  } catch (error) {
-    console.error("Error en el servidor:", error);
-    res.status(500).json({ error: "Error en el servidor" });
   }
-});
+);
 
 // Obtener rol por email
-router.get("/email/rol", async (req, res) => {
-  const email = req.query.mail;
+router.get("/email/rol",
+  validateEmailRangoRequest,  // ✅ Validar email (reutilizar middleware)
+  async (req, res) => {
+    try {
+      const email = req.validatedData.email;  // ✅ Email ya validado
 
-  try {
-    let { data, error } = await supabase.rpc('getrol', { mail: email });
+      console.log(`👤 Obteniendo rol para email: ${email}`);
 
-    if (error) {
-      console.error("Error en la consulta:", error);
-      return res.status(500).json({ error: "Error al obtener datos" });
+      let { data, error } = await supabase.rpc('getrol', { mail: email });
+
+      if (error) {
+        console.error("❌ Error en la consulta:", error);
+        return res.status(500).json({ error: "Error al obtener datos" });
+      }
+
+      console.log("✅ Datos obtenidos:", data);
+      res.json({ success: true, data: data });
+
+    } catch (error) {
+      console.error("❌ Error en el servidor:", error);
+      res.status(500).json({ error: "Error en el servidor" });
     }
-
-    console.log("Datos obtenidos:", data);
-    res.json(data);
-
-  } catch (error) {
-    console.error("Error en el servidor:", error);
-    res.status(500).json({ error: "Error en el servidor" });
   }
-});
+);
 
 // Obtener equipo por email de agente
 router.get("/traerEquipo", async (req, res) => {

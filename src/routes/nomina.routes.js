@@ -2,18 +2,40 @@
 const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
+const validateInput = require('../validators/input.validator');
 
 // Obtener nómina por líder
 router.get("/nominaPorlider", async (req, res) => {
-  const doc_lider = req.query.doc_lider;
-  console.log("documento del lider", doc_lider);
+  try {
+    const doc_lider = req.query.doc_lider;
 
-  let { data, error } = await supabase.rpc('get_nominacompletaporlider', {
-    doc_lider: doc_lider
-  });
+    // ✅ Validar que sea un DNI válido
+    const dniValidation = validateInput.validateDNI(doc_lider);
+    if (!dniValidation.isValid) {
+      return res.status(400).json({
+        error: 'DNI inválido',
+        details: dniValidation.error
+      });
+    }
 
-  if (error) console.error(error);
-  else return res.json(data);
+    console.log(`📋 Obteniendo nómina para líder: ${dniValidation.value}`);
+
+    let { data, error } = await supabase.rpc('get_nominacompletaporlider', {
+      doc_lider: dniValidation.value
+    });
+
+    if (error) {
+      console.error("❌ Error en Supabase:", error);
+      return res.status(500).json({ error: "Error al obtener nómina" });
+    }
+
+    console.log(`✅ Nómina obtenida: ${data?.length || 0} registros`);
+    return res.json({ success: true, count: data?.length || 0, data: data || [] });
+
+  } catch (error) {
+    console.error("❌ Error:", error);
+    return res.status(500).json({ error: "Error en el servidor" });
+  }
 });
 
 // Corregir nómina

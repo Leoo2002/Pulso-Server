@@ -2,57 +2,76 @@
 const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
+const { validateFrancoExchange } = require('../middlewares/security-validation.middleware');
 
 // Realizar cambio de franco
-router.post("/cambio", async (req, res) => {
-  const {
-    dni_agente1,
-    dni_agente2,
-    franco1,
-    franco2,
-    obs1,
-    obs2,
-    forzado,
-    mail_lider,
-    fechaAgente1,
-    fechaAgente2,
-    egresonuevo1,
-    egresonuevo2,
-    fecha_inicio
-  } = req.body;
+router.post("/cambio",
+  validateFrancoExchange,  // ✅ Validar todos los campos (DNI, email, observaciones)
+  async (req, res) => {
+    try {
+      // Datos ya validados por el middleware
+      const {
+        dni_agente1,
+        dni_agente2,
+        franco1,
+        franco2,
+        obs1,
+        obs2,
+        mail_lider
+      } = req.validatedData;
 
-  console.log("Datos recibidos en body", req.body);
+      // Extraer campos adicionales del body (no validados por seguridad, pero sí por lógica)
+      const {
+        forzado,
+        fechaAgente1,
+        fechaAgente2,
+        egresonuevo1,
+        egresonuevo2,
+        fecha_inicio
+      } = req.body;
 
-  try {
-    let { data, error } = await supabase.rpc("intercambiar_francos_pruebas", {
-      dni1: Number(dni_agente1),
-      dni2: Number(dni_agente2),
-      egresonuevo1,
-      egresonuevo2,
-      email_lider: mail_lider,
-      fecha_ini: fecha_inicio,
-      fechaagente1: fechaAgente1,
-      fechaagente2: fechaAgente2,
-      forzado,
-      francooriginalagente1: franco1,
-      francooriginalagente2: franco2,
-      obs_agente1: obs1,
-      obs_agente2: obs2,
-      tipo_cambio: "franco",
-    });
+      console.log(`🔄 Cambio de franco: DNI1=${dni_agente1}, DNI2=${dni_agente2}, Líder=${mail_lider}`);
 
-    if (error) {
-      console.error(error);
+      // Validación de lógica de negocio
+      if (dni_agente1 === dni_agente2) {
+        return res.status(400).json({
+          error: 'Validación fallida',
+          errorMensaje: "No se puede intercambiar francos con el mismo agente.",
+          errorLog: true
+        });
+      }
+
+      let { data, error } = await supabase.rpc("intercambiar_francos_pruebas", {
+        dni1: dni_agente1,
+        dni2: dni_agente2,
+        egresonuevo1,
+        egresonuevo2,
+        email_lider: mail_lider,
+        fecha_ini: fecha_inicio,
+        fechaagente1: fechaAgente1,
+        fechaagente2: fechaAgente2,
+        forzado,
+        francooriginalagente1: franco1,
+        francooriginalagente2: franco2,
+        obs_agente1: obs1,
+        obs_agente2: obs2,
+        tipo_cambio: "franco",
+      });
+
+      if (error) {
+        console.error("❌ Error en Supabase:", error);
+        return res.status(500).json({ error: error.message });
+      }
+
+      console.log("✅ Cambio procesado exitosamente");
+      return res.json({ success: true, data });
+
+    } catch (error) {
+      console.error("❌ Error al hacer cambio:", error);
       return res.status(500).json({ error: error.message });
     }
-
-    console.log("Respuesta Supabase:", data);
-    return res.json({ success: true, data });
-  } catch (error) {
-    console.error("Error al hacer cambio:", error);
-    return res.status(500).json({ error: error.message });
   }
-});
+);
 
 // Validar cambio de franco
 router.get("/validarCambio", async (req, res) => {

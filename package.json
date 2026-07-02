@@ -6,10 +6,12 @@
     "dotenv": "^16.5.0",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.5.2",
     "fs": "^0.0.1-security",
     "google-auth-library": "^9.15.1",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
+    "nodemailer": "^9.0.1",
     "pdfkit": "^0.17.2",
     "pdfkit-table": "^0.1.99",
     "xlsx": "^0.18.5"
