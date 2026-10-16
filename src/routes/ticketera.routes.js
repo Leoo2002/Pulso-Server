@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
+const { isBackOffice } = require('../utils/ticket-access');
 
 const multer = require('multer');
 const path = require('path');
@@ -30,6 +31,7 @@ const upload = multer({
   }
 });
 const MAX_IT_IMAGES_SIZE = 5 * 1024 * 1024;
+const ESTADOS_TICKETERA = new Set(['pendiente', 'en_curso', 'resuelto', 'cancelado', 'mal_cargado']);
 
 const recibirImagenes = (req, res, next) => {
   upload.array('imagenes', 3)(req, res, (error) => {
@@ -118,6 +120,53 @@ router.post('/crearIT', async (req, res) => {
     return res.status(500).json({
       error: 'Error interno del servidor.'
     });
+  }
+});
+
+router.patch('/actualizarEstadoTicketera', async (req, res) => {
+  const allowAnyProfileForTesting = process.env.TICKETERA_ALLOW_ANY_PROFILE === 'true';
+  if (!allowAnyProfileForTesting && !isBackOffice(req.user)) {
+    return res.status(403).json({
+      error: 'Solo el perfil Back Office puede actualizar casos. Para pruebas locales se puede habilitar TICKETERA_ALLOW_ANY_PROFILE=true.'
+    });
+  }
+
+  const casoId = Number(req.body?.caso_id);
+  const estado = typeof req.body?.estado === 'string' ? req.body.estado.trim() : '';
+  const observacion = typeof req.body?.observacion === 'string' ? req.body.observacion.trim() : '';
+
+  if (!Number.isSafeInteger(casoId) || casoId <= 0) {
+    return res.status(400).json({ error: 'El caso_id debe ser un ID numérico válido.' });
+  }
+  if (!ESTADOS_TICKETERA.has(estado)) {
+    return res.status(400).json({ error: 'Seleccioná un estado válido.' });
+  }
+  if (!observacion || observacion.length > 500) {
+    return res.status(400).json({
+      error: 'La observación es obligatoria y no puede superar los 500 caracteres.'
+    });
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('actualizar_estado_ticketera', {
+      p_caso_id: casoId,
+      p_estado: estado,
+      p_observacion: observacion,
+      p_email: typeof req.user?.email === 'string' ? req.user.email.trim() : null
+    });
+
+    if (error) {
+      console.error('Error al actualizar el estado del caso de ticketera:', error);
+      if (error.message?.includes('No existe un caso')) {
+        return res.status(404).json({ error: 'No existe un caso con ese ID.' });
+      }
+      return res.status(500).json({ error: 'No se pudo actualizar el caso.' });
+    }
+
+    return res.json(data);
+  } catch (error) {
+    console.error('Error inesperado al actualizar el caso de ticketera:', error);
+    return res.status(500).json({ error: 'Error interno del servidor.' });
   }
 });
 
