@@ -147,15 +147,21 @@ router.use(requireTicketAccess);
 
 router.get('/tickets/summary', async (_req, res) => {
   try {
-    const types = ['ticket', 'itracker'];
+    const types = ['TICKET', 'ITRACKER'];
     const queries = types.map((type) => (
-      supabase.from('support_tickets').select('id', { count: 'exact', head: true }).eq('type', type)
+      supabase.schema('tickets_soporte')
+        .from('ticketera_casos')
+        .select('id', { count: 'exact', head: true })
+        .eq('tipo_reg', type)
     ));
     const results = await Promise.all(queries);
     const failed = results.find((result) => result.error);
     if (failed) throw failed.error;
 
-    const summary = Object.fromEntries(types.map((type, index) => [type, { total: results[index].count || 0 }]));
+    const summary = {
+      ticket: { total: results[0].count || 0 },
+      itracker: { total: results[1].count || 0 }
+    };
     res.json(summary);
   } catch (error) {
     console.error('Error al obtener el resumen de tickets:', error);
@@ -496,5 +502,66 @@ router.patch('/tickets/:id/state', async (req, res) => {
     res.status(500).json({ error: 'No se pudo actualizar el ticket.' });
   }
 });
+
+
+
+router.get('/obtenerTickets', async (req, res) => {
+  try {
+    const { data, error } = await supabase.rpc('obtener_tickets');
+
+    if (error) {
+      console.error('Error al obtener tickets:', error);
+      return res.status(500).json({
+        error: 'No se pudieron obtener los tickets.'
+      });
+    }
+
+    const tickets = data ?? [];
+
+    const ticketsConImagenes = await Promise.all(
+      tickets.map(async (ticket) => {
+        const imagenes = await Promise.all(
+          (ticket.imagenes ?? []).map(async (imagen) => {
+            const { data: urlData, error: urlError } =
+              await supabase.storage
+                .from('ticketera-imagenes')
+                .createSignedUrl(imagen.ruta_archivo, 3600);
+
+            if (urlError) {
+              console.error(
+                `Error al generar URL de imagen ${imagen.id}:`,
+                urlError
+              );
+
+              return {
+                ...imagen,
+                url: null
+              };
+            }
+
+            return {
+              ...imagen,
+              url: urlData.signedUrl
+            };
+          })
+        );
+
+        return {
+          ...ticket,
+          imagenes
+        };
+      })
+    );
+
+    return res.json(ticketsConImagenes);
+  } catch (error) {
+    console.error('Error inesperado al obtener tickets:', error);
+
+    return res.status(500).json({
+      error: 'Error interno del servidor.'
+    });
+  }
+});
+
 
 module.exports = router;

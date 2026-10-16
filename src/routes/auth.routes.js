@@ -21,6 +21,14 @@ router.post('/login', async (req, res) => {
       mail: email
     });
 
+    
+const resultadoRol = await supabase.rpc('getrol', {
+  mail: email
+});
+
+console.dir(resultadoRol, { depth: null });
+
+
     if (rolError || !rolData || rolData.length === 0) {
       console.error("Error obteniendo el rol:", rolError, " rolData:", rolData);
       return res.status(500).json({ error: "Error al obtener el rol del usuario" });
@@ -38,8 +46,9 @@ router.post('/login', async (req, res) => {
 
     console.log("Rol del usuario:", rolData);
     console.log("Rango del usuario:", rangoData);
-
+    console.log('JWT_SECRET cargado:', Boolean(process.env.JWT_SECRET));
     const { exp, iat, nbf, ...payloadLimpio } = payload;
+
     const jwtToken = jwt.sign({
       ...payloadLimpio,
       rol: rolData,
