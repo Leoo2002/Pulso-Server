@@ -31,6 +31,7 @@ const nominaRoutes = require('./src/routes/nomina.routes');
 const metricasRoutes = require('./src/routes/metricas.routes');
 const pdfRoutes = require('./src/routes/pdf.routes');
 const devRoutes = require('./src/routes/dev.routes');
+const ticketsRoutes = require('./src/routes/tickets.routes');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -101,6 +102,7 @@ app.use('/api', nominaRoutes);
 app.use('/api', metricasRoutes);
 app.use('/api', pdfRoutes);
 app.use('/api', devRoutes);
+app.use('/api', ticketsRoutes);
 
 // Registrar endpoints de histórico de guardia desde el service (funcionan correctamente)
 historicoGuardiaPorLider(app);

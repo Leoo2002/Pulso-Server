@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { supabase, SUPABASE_URL, SUPABASE_KEY } = require('../config/database');
 const { registerMetricas } = require('../services/metricas.service');
+const { PERMISOS_VISTAS, ACCESOS_EXTRA } = require('../constants/permissions');
 
 // Obtener métricas en formato CSV
 router.get("/metricas", async (req, res) => {
@@ -196,6 +197,15 @@ router.get("/produDiaria/obtenerUltimoIntervalo", async (req, res) => {
 
 // Vaciar tabla de productividad diaria
 router.post("/produDiaria/vaciarTabla", async (req, res) => {
+  const usuario = req.user;
+  const rangosPermitidos = PERMISOS_VISTAS.cargarprodudiaria.filter(rango => rango !== 1);
+  const tieneAccesoPorRango = rangosPermitidos.includes(usuario?.rango);
+  const tieneAccesoEspecial = ACCESOS_EXTRA.cargarprodudiaria.includes(usuario?.email);
+
+  if (!tieneAccesoPorRango && !tieneAccesoEspecial) {
+    return res.status(403).json({ error: "Acceso denegado: permiso insuficiente" });
+  }
+
   let { data, error } = await supabase
     .rpc('call_kpi_delete_productividad_diaria');
 
@@ -428,5 +438,4 @@ router.get('/debug/datos_resolucion/sample', async (req, res) => {
 });
 
 module.exports = router;
-
 

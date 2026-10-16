@@ -1,6 +1,7 @@
 // Configuración de permisos por vista y rol de usuario
 const PERMISOS_VISTAS = {
   "inicio": [0, 1, 2, 3, 4, 5, 6],
+  "tickets": [0, 1, 2, 3, 4, 5, 6],
   "menudecambios": [1, 2, 3, 4, 5, 6],
   "cambiodefranco": [1, 2, 3, 4, 5, 6],
   "cambiodehorario": [1, 2, 3, 4, 5, 6],

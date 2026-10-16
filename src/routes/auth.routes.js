@@ -4,6 +4,7 @@ const router = express.Router();
 const jwt = require("jsonwebtoken");
 const { verifyGoogleToken } = require('../services/auth.service');
 const { supabase } = require('../config/database');
+const { isBackOffice } = require('../utils/ticket-access');
 
 // Endpoint para login con Google
 router.post('/login', async (req, res) => {
@@ -162,6 +163,10 @@ router.get("/validar-acceso", (req, res, next) => {
 
   if (!rolesPermitidos) {
     return res.status(400).json({ error: "Vista desconocida" });
+  }
+
+  if (view === 'tickets' && isBackOffice(req.user)) {
+    return res.status(200).json({ ok: true });
   }
 
   // Obtener el correo del token JWT directamente si req.user no está definido
