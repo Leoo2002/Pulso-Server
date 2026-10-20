@@ -31,7 +31,15 @@ const upload = multer({
   }
 });
 const MAX_IT_IMAGES_SIZE = 5 * 1024 * 1024;
-const ESTADOS_TICKETERA = new Set(['pendiente', 'en_curso', 'resuelto', 'cancelado', 'mal_cargado']);
+const ESTADOS_TICKETERA = new Set([
+  'pendiente',
+  'en_curso',
+  'resuelto',
+  'cancelado',
+  'mal_cargado',
+  'cancelado_duplicado',
+  'cancelado_no_corresponde'
+]);
 
 const recibirImagenes = (req, res, next) => {
   upload.array('imagenes', 3)(req, res, (error) => {
@@ -173,26 +181,28 @@ router.patch('/actualizarEstadoTicketera', async (req, res) => {
 
 
 router.get('/lideresTck', async (req, res) => {
-    try {
-        const { data, error } = await supabase.rpc(
-            'obtener_lideres_tck'
-        );
-
-        if (error) {
-            console.error('Error al obtener líderes:', error);
-            return res.status(500).json({
-                error: 'No se pudieron obtener los líderes'
-            });
-        }
-
-        return res.json(data ?? []);
-    } catch (error) {
-        console.error('Error inesperado:', error);
-
-        return res.status(500).json({
-            error: 'Error interno del servidor'
-        });
+  try {
+    const { data, error } = await supabase.rpc('obtener_lideres_tck');
+    if (error) {
+      console.error('Error al obtener líderes de la Ticketera:', error);
+      return res.status(500).json({ error: 'No se pudieron obtener los líderes.' });
     }
+
+    if (!Array.isArray(data)) {
+      console.error('La función obtener_lideres_tck no devolvió una lista.');
+      return res.status(502).json({ error: 'La respuesta de líderes no tiene el formato esperado.' });
+    }
+
+    const leaders = data
+      .filter((leader) => leader && typeof leader === 'object' && !Array.isArray(leader))
+      .map((leader) => ({ nombre: typeof leader.nombre === 'string' ? leader.nombre.trim() : '' }))
+      .filter((leader) => leader.nombre);
+
+    return res.json(leaders);
+  } catch (error) {
+    console.error('Error inesperado al obtener líderes de la Ticketera:', error);
+    return res.status(500).json({ error: 'Error interno del servidor.' });
+  }
 });
 
 

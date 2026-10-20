@@ -9,7 +9,15 @@ const BUCKET = 'pulso-ticket-attachments';
 const PAGE_SIZE = 20;
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
-const ALLOWED_STATUSES = new Set(['en_curso', 'resuelto', 'cancelado', 'mal_cargado', 'pendiente']);
+const ALLOWED_STATUSES = new Set([
+  'en_curso',
+  'resuelto',
+  'cancelado',
+  'mal_cargado',
+  'pendiente',
+  'cancelado_duplicado',
+  'cancelado_no_corresponde'
+]);
 const ALLOWED_TYPES = new Set(['ticket', 'itracker']);
 const ALLOWED_PRIORITIES = new Set(['baja', 'media', 'alta', 'urgente']);
 const ALLOWED_TICKET_USERS = new Set(['U 1', 'U 2', 'U 3', 'U 4', 'U 5', 'U 6']);
@@ -470,7 +478,7 @@ router.post('/tickets', uploadImages, async (req, res) => {
 
 router.patch('/tickets/:id/state', async (req, res) => {
   if (!isBackOffice(req.user)) {
-    return res.status(403).json({ error: 'Solo el perfil Back Office (rol 01) puede gestionar tickets.' });
+    return res.status(403).json({ error: 'Solo el perfil Back Office (rango 5) puede gestionar tickets.' });
   }
   if (!validUuid(req.params.id)) {
     return res.status(400).json({ error: 'El identificador del ticket no es válido.' });
@@ -506,8 +514,40 @@ router.patch('/tickets/:id/state', async (req, res) => {
 
 
 router.get('/obtenerTickets', async (req, res) => {
+  const search = typeof req.query.p_busqueda === 'string' ? req.query.p_busqueda.trim() : 'All';
+  const type = typeof req.query.type === 'string' ? req.query.type.trim().toLowerCase() : '';
+  const status = typeof req.query.status === 'string' ? req.query.status.trim().toLowerCase() : '';
+  const userCode = typeof req.query.userCode === 'string' ? req.query.userCode.trim().toLowerCase() : '';
+  const dateFrom = typeof req.query.dateFrom === 'string' ? req.query.dateFrom : '';
+  const dateTo = typeof req.query.dateTo === 'string' ? req.query.dateTo : '';
+
+  if (search.length > 100) {
+    return res.status(400).json({ error: 'La búsqueda no puede superar los 100 caracteres.' });
+  }
+  if (type && !ALLOWED_TYPES.has(type)) {
+    return res.status(400).json({ error: 'El tipo de solicitud no es válido.' });
+  }
+  const searchableStatuses = new Set([...ALLOWED_STATUSES, 'pendiente_bo']);
+  if (status && !searchableStatuses.has(status)) {
+    return res.status(400).json({ error: 'El estado del ticket no es válido.' });
+  }
+  if (userCode && !ALLOWED_TICKET_USERS.has(userCode.toUpperCase()) && !/^u\d{6}$/i.test(userCode)) {
+    return res.status(400).json({ error: 'El usuario del ticket no es válido.' });
+  }
+  if (dateFrom && !isValidDate(dateFrom)) {
+    return res.status(400).json({ error: 'La fecha inicial no es válida.' });
+  }
+  if (dateTo && !isValidDate(dateTo)) {
+    return res.status(400).json({ error: 'La fecha final no es válida.' });
+  }
+  if (dateFrom && dateTo && dateFrom > dateTo) {
+    return res.status(400).json({ error: 'La fecha inicial no puede ser posterior a la fecha final.' });
+  }
+
   try {
-    const { data, error } = await supabase.rpc('obtener_tickets');
+    const { data, error } = await supabase.rpc('obtener_tickets', {
+      p_busqueda: search || 'All'
+    });
 
     if (error) {
       console.error('Error al obtener tickets:', error);
@@ -516,7 +556,54 @@ router.get('/obtenerTickets', async (req, res) => {
       });
     }
 
-    const tickets = data ?? [];
+    if (!Array.isArray(data)) {
+      console.error('La función obtener_tickets no devolvió una lista.');
+      return res.status(502).json({ error: 'La respuesta de tickets no tiene el formato esperado.' });
+    }
+
+    const statusValue = (ticket) => {
+      const value = String(ticket.estado_actual || ticket.estado || ticket.status || '').trim()
+        .toLocaleLowerCase('es')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[\s-]+/g, '_');
+      const aliases = {
+        'en_gestion': 'en_curso',
+        'reportado': 'pendiente',
+        'pendiente_de_bo': 'pendiente_bo',
+        'cancelado_duplicado': 'cancelado_duplicado',
+        'cancelado_no_corresponde': 'cancelado_no_corresponde'
+      };
+      return aliases[value] || value;
+    };
+    const ticketType = (ticket) => {
+      const value = String(ticket.tipo_reg || ticket.type || ticket.tipo || '').trim().toLowerCase();
+      if (value === 'ticket') return 'ticket';
+      if (value === 'itracker' || value === 'it') return 'itracker';
+      return value;
+    };
+    const dateValue = (ticket) => {
+      const value = ticket.created_at
+        || ticket.fecha_creacion
+        || ticket.fecha_alta
+        || ticket.fecha_registro
+        || ticket.fecha_inconveniente
+        || '';
+      return String(value).slice(0, 10);
+    };
+
+    const tickets = data.filter((ticket) => {
+      if (type && ticketType(ticket) !== type) return false;
+      if (status && statusValue(ticket) !== status) return false;
+      const code = String(ticket.usuario || ticket.user_code || ticket.usuario_u_teco || ticket.uteco || '')
+        .trim()
+        .toLowerCase();
+      if (userCode && code !== userCode) return false;
+      const created = dateValue(ticket);
+      if (dateFrom && created < dateFrom) return false;
+      if (dateTo && created > dateTo) return false;
+      return true;
+    });
 
     const ticketsConImagenes = await Promise.all(
       tickets.map(async (ticket) => {

@@ -11,7 +11,7 @@ function roleCode(value) {
 }
 
 function isBackOffice(user) {
-  return roleCode(user?.rol) === '01';
+  return Number(user?.rango) === 5;
 }
 
 function canUseTicketing(user) {
