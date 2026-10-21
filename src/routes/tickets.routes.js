@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
 const { supabase } = require('../config/database');
-const { canUseTicketing, isBackOffice, roleCode } = require('../utils/ticket-access');
+const { canUseTicketing, hasBackOfficeAccess, roleCode } = require('../utils/ticket-access');
 
 const router = express.Router();
 const BUCKET = 'pulso-ticket-attachments';
@@ -174,6 +174,31 @@ router.get('/tickets/summary', async (_req, res) => {
   } catch (error) {
     console.error('Error al obtener el resumen de tickets:', error);
     res.status(500).json({ error: 'No se pudo cargar el resumen de tickets.' });
+  }
+});
+
+router.get('/tickets/statistics', async (_req, res) => {
+  try {
+    const { data, error } = await supabase.rpc('obtener_estadisticas_ticketera');
+    if (error) {
+      console.error('Error al obtener las estadísticas de Ticketera:', error);
+      return res.status(500).json({ error: 'No se pudieron cargar las estadísticas de Ticketera.' });
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      console.error('La función obtener_estadisticas_ticketera devolvió una respuesta inválida.');
+      return res.status(502).json({ error: 'La respuesta de estadísticas no tiene el formato esperado.' });
+    }
+
+    const requiredArrays = ['general', 'tickets', 'it', 'por_lider', 'por_canal', 'por_motivo'];
+    if (requiredArrays.some((key) => !Array.isArray(data[key]))) {
+      console.error('La función obtener_estadisticas_ticketera no devolvió todas las listas esperadas.');
+      return res.status(502).json({ error: 'La respuesta de estadísticas está incompleta.' });
+    }
+
+    return res.json(data);
+  } catch (error) {
+    console.error('Error inesperado al obtener las estadísticas de Ticketera:', error);
+    return res.status(500).json({ error: 'No se pudieron cargar las estadísticas de Ticketera.' });
   }
 });
 
@@ -477,8 +502,8 @@ router.post('/tickets', uploadImages, async (req, res) => {
 });
 
 router.patch('/tickets/:id/state', async (req, res) => {
-  if (!isBackOffice(req.user)) {
-    return res.status(403).json({ error: 'Solo el perfil Back Office (rango 5) puede gestionar tickets.' });
+  if (!hasBackOfficeAccess(req.user)) {
+    return res.status(403).json({ error: 'Solo perfiles de Back Office pueden gestionar tickets.' });
   }
   if (!validUuid(req.params.id)) {
     return res.status(400).json({ error: 'El identificador del ticket no es válido.' });

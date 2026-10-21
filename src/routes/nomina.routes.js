@@ -4,38 +4,44 @@ const router = express.Router();
 const { supabase } = require('../config/database');
 const validateInput = require('../validators/input.validator');
 
-router.post('/obtenerDatosNomina', async (req, res) => {
+router.post('/obtenerUsuariosNomina', async (req, res) => {
   const mail = typeof req.body?.mail === 'string' ? req.body.mail.trim() : '';
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail) || mail.length > 254) {
     return res.status(400).json({ error: 'Ingresá un mail válido.' });
   }
 
   try {
-    const { data, error } = await supabase.rpc('obtener_datos_nomina', {
+    const { data, error } = await supabase.rpc('obtener_usuarios_nomina', {
       p_mail: mail
     });
 
     if (error) {
-      console.error('Error al obtener datos de nómina por mail:', error);
+      console.error('Error al obtener usuario y segmentos de nómina por mail:', error);
       return res.status(500).json({ error: 'No se pudieron obtener los datos de nómina.' });
     }
 
     const profile = Array.isArray(data) ? data[0] : data;
-    if (!profile || typeof profile !== 'object') {
+    if (!profile || typeof profile !== 'object' || Object.keys(profile).length === 0) {
       return res.status(404).json({ error: 'No se encontraron datos de nómina para ese mail.' });
     }
     if (!Object.prototype.hasOwnProperty.call(profile, 'usuario')
-      || !Object.prototype.hasOwnProperty.call(profile, 'rango')) {
-      console.error('La función obtener_datos_nomina no devolvió las columnas usuario y rango.');
-      return res.status(502).json({ error: 'La respuesta de nómina no contiene usuario y rango.' });
+      || !Object.prototype.hasOwnProperty.call(profile, 'rango')
+      || !Array.isArray(profile.segmentos)) {
+      console.error('La función obtener_usuarios_nomina no devolvió usuario, rango y segmentos.');
+      return res.status(502).json({ error: 'La respuesta de nómina no contiene los datos esperados.' });
+    }
+    if (profile.segmentos.some((segment) => !segment || typeof segment.segmento !== 'string')) {
+      console.error('La función obtener_usuarios_nomina devolvió un segmento inválido.');
+      return res.status(502).json({ error: 'La respuesta de nómina contiene segmentos inválidos.' });
     }
 
     return res.json({
       usuario: profile.usuario,
-      rango: profile.rango
+      rango: profile.rango,
+      segmentos: profile.segmentos.map((segment) => ({ segmento: segment.segmento }))
     });
   } catch (error) {
-    console.error('Error inesperado al obtener datos de nómina por mail:', error);
+    console.error('Error inesperado al obtener usuario y segmentos de nómina por mail:', error);
     return res.status(500).json({ error: 'Error interno del servidor.' });
   }
 });

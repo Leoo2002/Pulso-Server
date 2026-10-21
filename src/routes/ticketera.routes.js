@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
-const { isBackOffice } = require('../utils/ticket-access');
+const { hasBackOfficeAccess } = require('../utils/ticket-access');
 
 const multer = require('multer');
 const path = require('path');
@@ -81,7 +81,34 @@ router.post('/crearTicketeraTicket', async (req, res) => {
       });
     }
 
-    return res.status(201).json(data);
+    const result = data && typeof data === 'object' && !Array.isArray(data)
+      ? data
+      : { caso_id: data };
+    const casoId = Number(result.caso_id);
+    let idTck = typeof result.id_tck === 'string' && result.id_tck.trim()
+      ? result.id_tck.trim()
+      : null;
+
+    if (!idTck && Number.isSafeInteger(casoId) && casoId > 0) {
+      try {
+        const { data: caso, error: errorIdTck } = await supabase
+          .schema('tickets_soporte')
+          .from('ticketera_casos')
+          .select('id_tck')
+          .eq('id', casoId)
+          .maybeSingle();
+
+        if (errorIdTck) {
+          console.error('El ticket se creó, pero no se pudo consultar su id_tck:', errorIdTck);
+        } else if (typeof caso?.id_tck === 'string' && caso.id_tck.trim()) {
+          idTck = caso.id_tck.trim();
+        }
+      } catch (errorIdTck) {
+        console.error('El ticket se creó, pero no se pudo consultar su id_tck:', errorIdTck);
+      }
+    }
+
+    return res.status(201).json({ ...result, id_tck: idTck });
 
   } catch (error) {
     console.error('Error en el servidor al crear ticket:', error);
@@ -133,9 +160,9 @@ router.post('/crearIT', async (req, res) => {
 
 router.patch('/actualizarEstadoTicketera', async (req, res) => {
   const allowAnyProfileForTesting = process.env.TICKETERA_ALLOW_ANY_PROFILE === 'true';
-  if (!allowAnyProfileForTesting && !isBackOffice(req.user)) {
+  if (!allowAnyProfileForTesting && !hasBackOfficeAccess(req.user)) {
     return res.status(403).json({
-      error: 'Solo el perfil Back Office puede actualizar casos. Para pruebas locales se puede habilitar TICKETERA_ALLOW_ANY_PROFILE=true.'
+      error: 'Solo los perfiles de Back Office o Desarrollo pueden actualizar casos. Para pruebas locales se puede habilitar TICKETERA_ALLOW_ANY_PROFILE=true.'
     });
   }
 

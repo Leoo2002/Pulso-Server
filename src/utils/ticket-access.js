@@ -14,8 +14,12 @@ function isBackOffice(user) {
   return Number(user?.rango) === 5;
 }
 
+function hasBackOfficeAccess(user) {
+  return Number(user?.rango) === 1 || isBackOffice(user);
+}
+
 function canUseTicketing(user) {
   return isBackOffice(user) || ALLOWED_RANGES.has(Number(user?.rango));
 }
 
-module.exports = { canUseTicketing, isBackOffice, roleCode };
+module.exports = { canUseTicketing, hasBackOfficeAccess, isBackOffice, roleCode };

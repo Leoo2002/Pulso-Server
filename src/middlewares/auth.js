@@ -25,9 +25,11 @@ function authMiddleware(rolesPermitidos = []) {
         return res.status(403).json({ error: "Token inválido o expirado" });
       }
 
-      const rango = decoded.rango;
+      const rango = decoded.rango === null || decoded.rango === undefined || String(decoded.rango).trim() === ''
+        ? NaN
+        : Number(decoded.rango);
       if (!rolesPermitidos.includes(rango)) {
-        console.log(rango);
+        console.log(decoded.rango);
         console.warn("🚫 Acceso denegado: rango insuficiente");
         return res.status(403).json({ error: "Acceso denegado: permiso insuficiente" });
       }

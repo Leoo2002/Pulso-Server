@@ -198,8 +198,10 @@ router.get("/produDiaria/obtenerUltimoIntervalo", async (req, res) => {
 // Vaciar tabla de productividad diaria
 router.post("/produDiaria/vaciarTabla", async (req, res) => {
   const usuario = req.user;
-  const rangosPermitidos = PERMISOS_VISTAS.cargarprodudiaria.filter(rango => rango !== 1);
-  const tieneAccesoPorRango = rangosPermitidos.includes(usuario?.rango);
+  const rango = usuario?.rango === null || usuario?.rango === undefined || String(usuario.rango).trim() === ''
+    ? NaN
+    : Number(usuario.rango);
+  const tieneAccesoPorRango = PERMISOS_VISTAS.cargarprodudiaria.includes(rango);
   const tieneAccesoEspecial = ACCESOS_EXTRA.cargarprodudiaria.includes(usuario?.email);
 
   if (!tieneAccesoPorRango && !tieneAccesoEspecial) {
@@ -438,4 +440,3 @@ router.get('/debug/datos_resolucion/sample', async (req, res) => {
 });
 
 module.exports = router;
-
