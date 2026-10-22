@@ -33,6 +33,7 @@ const pdfRoutes = require('./src/routes/pdf.routes');
 const devRoutes = require('./src/routes/dev.routes');
 const ticketsRoutes = require('./src/routes/tickets.routes');
 const ticketeraRoutes = require('./src/routes/ticketera.routes');
+const ticketeraAnalyticsRoutes = require('./src/routes/ticketera-analytics.routes');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -104,6 +105,7 @@ app.use('/api', metricasRoutes);
 app.use('/api', pdfRoutes);
 app.use('/api', devRoutes);
 app.use('/api', ticketsRoutes);
+app.use('/api', ticketeraAnalyticsRoutes);
 app.use('/api', ticketeraRoutes);
 
 // Registrar endpoints de histórico de guardia desde el service (funcionan correctamente)
