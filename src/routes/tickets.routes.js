@@ -570,10 +570,11 @@ router.get('/obtenerTickets', async (req, res) => {
   }
 
   try {
+    console.time('RPC obtener_tickets');
     const { data, error } = await supabase.rpc('obtener_tickets', {
       p_busqueda: search || 'All'
     });
-
+    console.timeEnd('RPC obtener_tickets');
     if (error) {
       console.error('Error al obtener tickets:', error);
       return res.status(500).json({
