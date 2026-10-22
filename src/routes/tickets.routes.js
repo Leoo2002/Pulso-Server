@@ -540,6 +540,7 @@ router.patch('/tickets/:id/state', async (req, res) => {
 
 router.get('/obtenerTickets', async (req, res) => {
   const search = typeof req.query.p_busqueda === 'string' ? req.query.p_busqueda.trim() : 'All';
+  const scope = typeof req.query.scope === 'string' ? req.query.scope.trim().toLowerCase() : 'all';
   const type = typeof req.query.type === 'string' ? req.query.type.trim().toLowerCase() : '';
   const status = typeof req.query.status === 'string' ? req.query.status.trim().toLowerCase() : '';
   const userCode = typeof req.query.userCode === 'string' ? req.query.userCode.trim().toLowerCase() : '';
@@ -549,6 +550,15 @@ router.get('/obtenerTickets', async (req, res) => {
   if (search.length > 100) {
     return res.status(400).json({ error: 'La búsqueda no puede superar los 100 caracteres.' });
   }
+  if (!['all', 'mine'].includes(scope)) {
+    return res.status(400).json({ error: 'El alcance de búsqueda no es válido.' });
+  }
+  if (scope === 'mine' && !req.user?.email) {
+    return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
+  }
+  const requesterEmail = scope === 'mine'
+    ? String(req.user.email).trim().toLowerCase()
+    : '';
   if (type && !ALLOWED_TYPES.has(type)) {
     return res.status(400).json({ error: 'El tipo de solicitud no es válido.' });
   }
@@ -619,6 +629,7 @@ router.get('/obtenerTickets', async (req, res) => {
     };
 
     const tickets = data.filter((ticket) => {
+      if (requesterEmail && String(ticket.email || '').trim().toLowerCase() !== requesterEmail) return false;
       if (type && ticketType(ticket) !== type) return false;
       if (status && statusValue(ticket) !== status) return false;
       const code = String(ticket.usuario || ticket.user_code || ticket.usuario_u_teco || ticket.uteco || '')
