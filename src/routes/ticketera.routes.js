@@ -47,6 +47,28 @@ const ESTADOS_TICKETERA_VENTAS = new Set([
   'no corresponde duplicado',
   'derivacion incorrecta'
 ]);
+const LIDERES_TICKETERAS = new Set(['VENTAS', 'ONBOARDING', 'ABONO/DEGRA']);
+
+const obtenerCasoIdRpc = (result) => {
+  const value = result && typeof result === 'object' && !Array.isArray(result)
+    ? result.caso_id ?? result.id
+    : result;
+  const casoId = Number(value);
+  return Number.isSafeInteger(casoId) && casoId > 0 ? casoId : null;
+};
+
+const actualizarTipoTicketeraCaso = async (casoId, tipoReg) => {
+  const { data, error } = await supabase.schema('tickets_soporte')
+    .from('ticketera_casos')
+    .update({ tipo_ticketera: 'ONBOARDING' })
+    .eq('id', casoId)
+    .eq('tipo_reg', tipoReg)
+    .select('id')
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new Error(`No se encontró el caso ${casoId} para asignar la ticketera ONBOARDING.`);
+};
 
 const recibirImagenes = (req, res, next) => {
   upload.array('imagenes', 3)(req, res, (error) => {
@@ -75,7 +97,7 @@ router.post('/crearTicketeraTicket', async (req, res) => {
     const { data, error } = await supabase.rpc(
       'crear_ticket',
       {
-        p_ticket: ticket
+        p_ticket: { ...ticket, tipo_ticketera: 'ONBOARDING' }
       }
     );
 
@@ -91,7 +113,21 @@ router.post('/crearTicketeraTicket', async (req, res) => {
     const result = data && typeof data === 'object' && !Array.isArray(data)
       ? data
       : { caso_id: data };
-    const casoId = Number(result.caso_id);
+    const casoId = obtenerCasoIdRpc(result);
+    if (!casoId) {
+      console.error('crear_ticket devolvió una respuesta sin caso_id válido:', data);
+      return res.status(502).json({
+        error: 'El ticket se creó, pero no se pudo confirmar su ID para asignar la ticketera ONBOARDING.'
+      });
+    }
+    try {
+      await actualizarTipoTicketeraCaso(casoId, 'TICKET');
+    } catch (error) {
+      console.error(`El ticket ${casoId} se creó, pero no se pudo asignar ONBOARDING:`, error);
+      return res.status(500).json({
+        error: `El ticket se creó (caso ${casoId}), pero no se pudo asignar la ticketera ONBOARDING. No vuelvas a enviarlo; contactá a soporte.`
+      });
+    }
     let idTck = typeof result.id_tck === 'string' && result.id_tck.trim()
       ? result.id_tck.trim()
       : null;
@@ -133,6 +169,10 @@ router.post('/crearTicketeraTicketVentas', async (req, res) => {
     return res.status(400).json({
       error: 'Los datos del ticket de Ventas son obligatorios.'
     });
+  }
+  const creatorEmail = typeof req.user?.email === 'string' ? req.user.email.trim() : '';
+  if (!creatorEmail) {
+    return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
   }
 
   const requiredFields = [
@@ -199,26 +239,43 @@ router.post('/crearTicketeraTicketVentas', async (req, res) => {
     }
 
     const casoId = Number(data);
-    let idTck = null;
-    if (Number.isSafeInteger(casoId) && casoId > 0) {
-      try {
-        const { data: caso, error: errorIdTck } = await supabase
-          .schema('tickets_soporte')
-          .from('ticketera_casos')
-          .select('id_tck')
-          .eq('id', casoId)
-          .maybeSingle();
+    if (!Number.isSafeInteger(casoId) || casoId <= 0) {
+      console.error('crear_ticket_ventas devolvió un caso_id no válido:', data);
+      return res.status(502).json({
+        error: 'El ticket se creó, pero no se pudo confirmar su ID. No vuelvas a enviarlo; contactá a soporte.'
+      });
+    }
+    const { data: updatedCase, error: emailError } = await supabase.schema('tickets_soporte')
+      .from('ticketera_casos')
+      .update({ email: creatorEmail })
+      .eq('id', casoId)
+      .eq('tipo_reg', 'TICKET')
+      .eq('tipo_ticketera', 'VENTAS')
+      .select('id')
+      .maybeSingle();
+    if (emailError || !updatedCase) {
+      console.error(`El ticket de Ventas ${casoId} se creó, pero no se pudo guardar el correo creador:`, emailError);
+      return res.status(500).json({
+        error: `El ticket se creó (caso ${casoId}), pero no se pudo guardar el correo de creación. No vuelvas a enviarlo; contactá a soporte.`
+      });
+    }
 
-        if (errorIdTck) {
-          console.error('El ticket de Ventas se creó, pero no se pudo consultar su id_tck:', errorIdTck);
-        } else if (typeof caso?.id_tck === 'string' && caso.id_tck.trim()) {
-          idTck = caso.id_tck.trim();
-        }
-      } catch (errorIdTck) {
+    let idTck = null;
+    try {
+      const { data: caso, error: errorIdTck } = await supabase
+        .schema('tickets_soporte')
+        .from('ticketera_casos')
+        .select('id_tck')
+        .eq('id', casoId)
+        .maybeSingle();
+
+      if (errorIdTck) {
         console.error('El ticket de Ventas se creó, pero no se pudo consultar su id_tck:', errorIdTck);
+      } else if (typeof caso?.id_tck === 'string' && caso.id_tck.trim()) {
+        idTck = caso.id_tck.trim();
       }
-    } else {
-      console.error('crear_ticket_ventas devolvió un caso_id no representable para adjuntos:', data);
+    } catch (errorIdTck) {
+      console.error('El ticket de Ventas se creó, pero no se pudo consultar su id_tck:', errorIdTck);
     }
 
     return res.status(201).json({ caso_id: data, id_tck: idTck });
@@ -232,8 +289,15 @@ router.post('/crearTicketeraTicketVentas', async (req, res) => {
 
 router.get('/obtenerTicketsVentas', async (req, res) => {
   const search = typeof req.query.p_busqueda === 'string' ? req.query.p_busqueda.trim() : 'All';
+  const scope = typeof req.query.scope === 'string' ? req.query.scope.trim().toLowerCase() : 'all';
   if (search.length > 100) {
     return res.status(400).json({ error: 'La búsqueda no puede superar los 100 caracteres.' });
+  }
+  if (!['all', 'mine'].includes(scope)) {
+    return res.status(400).json({ error: 'El alcance de búsqueda no es válido.' });
+  }
+  if (scope === 'mine' && (typeof req.user?.email !== 'string' || !req.user.email.trim())) {
+    return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
   }
 
   try {
@@ -249,7 +313,15 @@ router.get('/obtenerTicketsVentas', async (req, res) => {
       return res.status(502).json({ error: 'La respuesta de tickets de Ventas no tiene el formato esperado.' });
     }
 
-    const tickets = await Promise.all(data.map(async (ticket, index) => {
+    const requesterEmail = scope === 'mine' ? req.user.email.trim().toLowerCase() : '';
+    const scopedTickets = scope === 'mine'
+      ? data.filter((ticket) =>
+        ticket && typeof ticket === 'object' && !Array.isArray(ticket)
+        && String(ticket.email || '').trim().toLowerCase() === requesterEmail
+      )
+      : data;
+
+    const tickets = await Promise.all(scopedTickets.map(async (ticket, index) => {
       if (!ticket || typeof ticket !== 'object' || Array.isArray(ticket)) {
         throw new Error(`El registro de Ventas ${index + 1} no tiene el formato esperado.`);
       }
@@ -297,7 +369,7 @@ router.post('/crearIT', async (req, res) => {
     const { data, error } = await supabase.rpc(
       'crear_it',
       {
-        p_it: it
+        p_it: { ...it, tipo_ticketera: 'ONBOARDING' }
       }
     );
 
@@ -307,6 +379,22 @@ router.post('/crearIT', async (req, res) => {
       return res.status(500).json({
         error: 'No se pudo crear el IT.',
         detalle: error.message
+      });
+    }
+
+    const casoId = obtenerCasoIdRpc(data);
+    if (!casoId) {
+      console.error('crear_it devolvió una respuesta sin caso_id válido:', data);
+      return res.status(502).json({
+        error: 'El IT se creó, pero no se pudo confirmar su ID para asignar la ticketera ONBOARDING.'
+      });
+    }
+    try {
+      await actualizarTipoTicketeraCaso(casoId, 'ITRACKER');
+    } catch (error) {
+      console.error(`El IT ${casoId} se creó, pero no se pudo asignar ONBOARDING:`, error);
+      return res.status(500).json({
+        error: `El IT se creó (caso ${casoId}), pero no se pudo asignar la ticketera ONBOARDING. No vuelvas a enviarlo; contactá a soporte.`
       });
     }
 
@@ -429,6 +517,46 @@ router.patch('/actualizarEstadoTicketeraVentas', async (req, res) => {
 });
 
 
+
+router.get('/lideresTicketera', async (req, res) => {
+  const ticketera = typeof req.query.p_ticketera === 'string'
+    ? req.query.p_ticketera.trim().toUpperCase()
+    : '';
+  if (!LIDERES_TICKETERAS.has(ticketera)) {
+    return res.status(400).json({
+      error: 'Indicá una ticketera válida: VENTAS, ONBOARDING o ABONO/DEGRA.'
+    });
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('obtener_lideres_ticketera', {
+      p_ticketera: ticketera
+    });
+    if (error) {
+      console.error(`Error al obtener líderes de ${ticketera}:`, error);
+      return res.status(500).json({ error: 'No se pudieron obtener los líderes de la ticketera.' });
+    }
+    if (!Array.isArray(data)) {
+      console.error(`obtener_lideres_ticketera(${ticketera}) no devolvió una lista.`);
+      return res.status(502).json({ error: 'La respuesta de líderes no tiene el formato esperado.' });
+    }
+
+    const leaders = data
+      .filter((leader) => leader && typeof leader === 'object' && !Array.isArray(leader))
+      .map((leader) => ({
+        id: leader.id,
+        usuario: leader.usuario,
+        nombre: typeof leader.nombre === 'string' ? leader.nombre.trim() : '',
+        mail: typeof leader.mail === 'string' ? leader.mail.trim() : ''
+      }))
+      .filter((leader) => leader.nombre);
+
+    return res.json(leaders);
+  } catch (error) {
+    console.error(`Error inesperado al obtener líderes de ${ticketera}:`, error);
+    return res.status(500).json({ error: 'Error interno del servidor.' });
+  }
+});
 
 router.get('/lideresTck', async (req, res) => {
   try {

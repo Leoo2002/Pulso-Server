@@ -582,7 +582,7 @@ router.get('/obtenerTickets', async (req, res) => {
   try {
     console.time('RPC obtener_tickets');
     const { data, error } = await supabase.rpc('obtener_tickets', {
-      p_busqueda: search || 'All'
+      p_busqueda: 'ONBOARDING'
     });
     console.timeEnd('RPC obtener_tickets');
     if (error) {
@@ -627,8 +627,14 @@ router.get('/obtenerTickets', async (req, res) => {
         || '';
       return String(value).slice(0, 10);
     };
+    const searchValue = search && search.toLowerCase() !== 'all'
+      ? search.toLocaleLowerCase('es')
+      : '';
 
     const tickets = data.filter((ticket) => {
+      const { imagenes, ...searchableTicket } = ticket;
+      if (searchValue
+        && !JSON.stringify(searchableTicket).toLocaleLowerCase('es').includes(searchValue)) return false;
       if (requesterEmail && String(ticket.email || '').trim().toLowerCase() !== requesterEmail) return false;
       if (type && ticketType(ticket) !== type) return false;
       if (status && statusValue(ticket) !== status) return false;
