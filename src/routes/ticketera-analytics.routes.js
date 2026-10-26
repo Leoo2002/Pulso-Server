@@ -33,7 +33,7 @@ function parseFilters(body, detail) {
   return params;
 }
 
-function handler(detail) {
+function handler(detail, exporting = false) {
   return async (req, res) => {
     const range = Number(req.user?.rango);
     if (!canUseTicketing(req.user) || !Number.isInteger(range) || range === 0) {
@@ -47,19 +47,29 @@ function handler(detail) {
     }
     if (detail) delete params.p_granularidad;
     try {
-      const rpc = detail ? 'obtener_detalle_analitica_ticketera' : 'obtener_analitica_ticketera';
+      const rpc = exporting ? 'exportar_analitica_ticketera'
+        : detail ? 'obtener_detalle_analitica_ticketera' : 'obtener_analitica_ticketera';
       const { data, error } = await supabase.rpc(rpc, params);
       if (error) {
         console.error(`Error en ${rpc}:`, error);
         return res.status(error.code === '22023' || error.code === '22007' ? 400 : 500)
           .json({ error: error.code === '22023' ? error.message : 'No se pudo consultar la analítica de Ticketera.' });
       }
+      const validAnalytics = (value) => value && typeof value === 'object'
+        && value.kpis && value.distribuciones && Array.isArray(value.volumen);
+      const validExport = () => validAnalytics(data.analitica)
+        && Array.isArray(data.columnas) && data.columnas.length > 0
+        && data.columnas.every((column) => typeof column === 'string' && column.length > 0)
+        && new Set(data.columnas).size === data.columnas.length
+        && Array.isArray(data.items) && data.total === data.items.length
+        && data.items.every((item) => item && typeof item === 'object' && !Array.isArray(item)
+          && Object.keys(item).every((key) => data.columnas.includes(key)));
       if (!data || typeof data !== 'object' || Array.isArray(data)
-        || (detail ? !Array.isArray(data.items) : !data.kpis || !data.distribuciones || !Array.isArray(data.volumen))) {
+        || (exporting ? !validExport() : detail ? !Array.isArray(data.items) : !validAnalytics(data))) {
         console.error(`Respuesta inválida de ${rpc}.`);
         return res.status(502).json({ error: 'La analítica devolvió un formato inesperado.' });
       }
-      if (!detail && data.calidad_datos?.sin_fecha_carga > 0) {
+      if (!detail && !exporting && data.calidad_datos?.sin_fecha_carga > 0) {
         let query = supabase.schema('tickets_soporte').from('ticketera_analitica_base')
           .select('caso_id,id_tck,estado').is('fecha_carga', null);
         for (const [filter, column] of [['lideres', 'lider'], ['canales', 'canal'], ['tipos', 'tipo']]) {
@@ -87,5 +97,6 @@ function handler(detail) {
 
 router.post('/tickets/analytics', handler(false));
 router.post('/tickets/analytics/detail', handler(true));
+router.post('/tickets/analytics/export', handler(false, true));
 
 module.exports = router;

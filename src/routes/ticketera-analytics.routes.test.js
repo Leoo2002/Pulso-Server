@@ -42,12 +42,59 @@ before(async () => {
 });
 after(async () => { await new Promise((resolve) => server.close(resolve)); });
 
-async function post(body, range = '2', detail = false) {
-  return fetch(`${base}/tickets/analytics${detail ? '/detail' : ''}`, {
+async function post(body, range = '2', detail = false, exporting = false) {
+  return fetch(`${base}/tickets/analytics${exporting ? '/export' : detail ? '/detail' : ''}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...(range ? { 'x-test-range': range } : {}) },
     body: JSON.stringify(body)
   });
 }
+
+test('export uses the same authenticated metrics permission and does not accept pagination or selection', async () => {
+  for (const range of ['0', '', 'invalid', '7']) {
+    calls = [];
+    assert.equal((await post({}, range, false, true)).status, 403);
+    assert.equal(calls.length, 0);
+  }
+  for (const body of [{ pagina: 1 }, { tamano: 100 }, { dimension: 'estado' }, { ignored: true }]) {
+    calls = [];
+    assert.equal((await post(body, '2', false, true)).status, 400);
+    assert.equal(calls.length, 0);
+  }
+});
+
+test('export returns all rows and columns, using applied filters without detail pagination', async () => {
+  const items = Array.from({ length: 125 }, (_, index) => ({
+    'analitica.caso_id': index + 1, 'caso.email_cliente': `cliente${index}@example.com`,
+    historial_observaciones: [{ observacion: 'Prueba' }]
+  }));
+  const payload = { analitica: { kpis: {}, distribuciones: {}, volumen: [] },
+    columnas: ['analitica.caso_id', 'caso.email_cliente', 'historial_observaciones'], items, total: 125 };
+  result = { data: payload, error: null };
+  const response = await post({ desde: '2026-10-01', hasta: '2026-10-24', lideres: ['A'],
+    canales: ['digital'], tipos: ['ticket', 'itracker'], estados: ['resuelto'],
+    granularidad: 'semana', zona_horaria: 'UTC' }, '5', false, true);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), payload);
+  assert.deepEqual(calls.at(-1), { name: 'exportar_analitica_ticketera', params: {
+    p_desde: '2026-10-01', p_hasta: '2026-10-24', p_lideres: ['A'], p_canales: ['digital'],
+    p_tipos: ['ticket', 'itracker'], p_estados: ['resuelto'], p_granularidad: 'semana', p_zona_horaria: 'UTC'
+  } });
+});
+
+test('export rejects missing rows, duplicate headers and malformed payloads rather than returning partial data', async () => {
+  const valid = { analitica: { kpis: {}, distribuciones: {}, volumen: [] },
+    columnas: ['id'], items: [{ id: 1 }], total: 1 };
+  for (const payload of [
+    { ...valid, total: 2 }, { ...valid, columnas: ['id', 'id'] },
+    { ...valid, columnas: [] }, { ...valid, items: [null] },
+    { ...valid, items: [{ other: 1 }] }, { ...valid, analitica: null }
+  ]) {
+    result = { data: payload, error: null };
+    assert.equal((await post({}, '2', false, true)).status, 502);
+  }
+  result = { data: null, error: { code: 'PGRST202', message: 'Missing function' } };
+  assert.equal((await post({}, '2', false, true)).status, 500);
+});
 
 test('JWT profile must allow metrics; rango 0 and missing/invalid profiles cannot call RPC', async () => {
   for (const range of ['0', '', 'invalid', '7']) {
