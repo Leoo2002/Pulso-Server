@@ -46,6 +46,36 @@ router.post('/obtenerUsuariosNomina', async (req, res) => {
   }
 });
 
+router.post('/obtenerHerramientasUsuario', async (req, res) => {
+  const mail = typeof req.body?.mail === 'string' ? req.body.mail.trim() : '';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail) || mail.length > 254) {
+    return res.status(400).json({ error: 'Ingresá un mail válido.' });
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('obtener_herramientas_usuario', {
+      p_mail: mail
+    });
+
+    if (error) {
+      console.error('Error al obtener herramientas asignadas por mail:', error);
+      return res.status(500).json({ error: 'No se pudieron obtener las herramientas asignadas.' });
+    }
+    if (!Array.isArray(data) || data.some((tool) =>
+      !tool || typeof tool.nombre !== 'string'
+      || !['string', 'number'].includes(typeof tool.id_herramienta)
+    )) {
+      console.error('La función obtener_herramientas_usuario devolvió una lista inválida.');
+      return res.status(502).json({ error: 'La respuesta de herramientas no tiene el formato esperado.' });
+    }
+
+    return res.json(data.map(({ id_herramienta, nombre }) => ({ id_herramienta, nombre })));
+  } catch (error) {
+    console.error('Error inesperado al obtener herramientas asignadas por mail:', error);
+    return res.status(500).json({ error: 'No se pudieron obtener las herramientas asignadas.' });
+  }
+});
+
 // Obtener nómina por líder
 router.get("/nominaPorlider", async (req, res) => {
   try {
