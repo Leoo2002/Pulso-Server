@@ -620,6 +620,24 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
       });
     }
 
+    if (String(caso.tipo_ticketera).toUpperCase() === 'DEGRA') {
+      const email = typeof req.user?.email === 'string' ? req.user.email.trim() : '';
+      if (!email) {
+        return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
+      }
+      const { data: tools, error: toolsError } = await supabase.rpc('obtener_herramientas_usuario', {
+        p_mail: email
+      });
+      if (toolsError) throw toolsError;
+      if (!Array.isArray(tools)) {
+        console.error('obtener_herramientas_usuario devolvió una respuesta inválida al autorizar la carga de imágenes Degra.');
+        return res.status(502).json({ error: 'No se pudieron verificar los permisos de Ticketera Degra.' });
+      }
+      if (!tools.some((tool) => tool && tool.nombre === 'Ticketera_ABONO_DEGRA')) {
+        return res.status(403).json({ error: 'No tienes permisos para adjuntar imágenes a tickets de Degra.' });
+      }
+    }
+
     if (String(caso.tipo_reg).toUpperCase() === 'ITRACKER') {
       if (archivos.some((archivo) => !['image/jpeg', 'image/png'].includes(archivo.mimetype))) {
         return res.status(400).json({
