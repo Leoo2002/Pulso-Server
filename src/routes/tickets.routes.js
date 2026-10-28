@@ -20,6 +20,14 @@ const ALLOWED_STATUSES = new Set([
   'cancelado_no_corresponde'
 ]);
 const ALLOWED_TYPES = new Set(['ticket', 'itracker']);
+const ALLOWED_SALES_STATUSES = new Set([
+  'reportado',
+  'cerrado ok',
+  'no corresponde',
+  'no corresponde duplicado',
+  'derivacion incorrecta'
+]);
+const ALLOWED_TICKETERAS = new Set(['ONBOARDING', 'VENTAS', 'DEGRA']);
 const ALLOWED_PRIORITIES = new Set(['baja', 'media', 'alta', 'urgente']);
 const ALLOWED_TICKET_USERS = new Set(['U 1', 'U 2', 'U 3', 'U 4', 'U 5', 'U 6']);
 const ALLOWED_CHANNELS = new Set(['digital', 'telefonico']);
@@ -152,7 +160,8 @@ async function signAttachments(attachments) {
   }));
 }
 
-router.use(['/tickets', '/obtenerTickets'], requireTicketAccess, requireTicketeraAccess('ONBOARDING'));
+router.use('/tickets', requireTicketAccess, requireTicketeraAccess('ONBOARDING'));
+router.use('/obtenerTickets', requireTicketAccess, requireTicketeraAccess());
 
 router.get('/tickets/summary', async (_req, res) => {
   try {
@@ -161,7 +170,7 @@ router.get('/tickets/summary', async (_req, res) => {
       supabase.schema('tickets_soporte')
         .from('ticketera_casos')
         .select('id', { count: 'exact', head: true })
-        .eq('tipo_ticketera', 'ONBOARDING')
+        .eq('tipo_ticketera', 3)
         .eq('tipo_reg', type)
     ));
     const results = await Promise.all(queries);
@@ -546,15 +555,30 @@ router.patch('/tickets/:id/state', async (req, res) => {
 
 router.get('/obtenerTickets', async (req, res) => {
   const search = typeof req.query.p_busqueda === 'string' ? req.query.p_busqueda.trim() : 'All';
+  const rawTicketera = typeof req.query.servicio === 'string' ? req.query.servicio.trim().toUpperCase() : '';
+  const ticketera = ['ABONO/DEGRA', 'ABONO-DEGRA'].includes(rawTicketera) ? 'DEGRA' : rawTicketera;
   const scope = typeof req.query.scope === 'string' ? req.query.scope.trim().toLowerCase() : 'all';
   const type = typeof req.query.type === 'string' ? req.query.type.trim().toLowerCase() : '';
   const status = typeof req.query.status === 'string' ? req.query.status.trim().toLowerCase() : '';
   const userCode = typeof req.query.userCode === 'string' ? req.query.userCode.trim().toLowerCase() : '';
+  const leader = typeof req.query.lider === 'string' ? req.query.lider.trim() : '';
   const dateFrom = typeof req.query.dateFrom === 'string' ? req.query.dateFrom : '';
   const dateTo = typeof req.query.dateTo === 'string' ? req.query.dateTo : '';
 
+  if (!ALLOWED_TICKETERAS.has(ticketera)) {
+    return res.status(400).json({ error: 'El servicio de Ticketera no es válido.' });
+  }
+  if (!hasTicketeraAccess(req, ticketera)) {
+    return res.status(403).json({ error: 'No tienes permisos para acceder a esta ticketera.' });
+  }
   if (search.length > 100) {
     return res.status(400).json({ error: 'La búsqueda no puede superar los 100 caracteres.' });
+  }
+  if (req.query.lider !== undefined && typeof req.query.lider !== 'string') {
+    return res.status(400).json({ error: 'El líder debe ser texto.' });
+  }
+  if (leader.length > 150) {
+    return res.status(400).json({ error: 'El líder no puede superar los 150 caracteres.' });
   }
   if (!['all', 'mine'].includes(scope)) {
     return res.status(400).json({ error: 'El alcance de búsqueda no es válido.' });
@@ -568,9 +592,20 @@ router.get('/obtenerTickets', async (req, res) => {
   if (type && !ALLOWED_TYPES.has(type)) {
     return res.status(400).json({ error: 'El tipo de solicitud no es válido.' });
   }
-  const searchableStatuses = new Set([...ALLOWED_STATUSES, 'pendiente_bo']);
-  if (status && !searchableStatuses.has(status)) {
+  const normalizeStatus = (value) => value.trim().toLocaleLowerCase('es')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\s-]+/g, '_');
+  const statusFilter = normalizeStatus(status);
+  const searchableStatuses = ticketera === 'VENTAS'
+    ? new Set([...ALLOWED_SALES_STATUSES].map(normalizeStatus))
+    : new Set([...ALLOWED_STATUSES, ...(ticketera === 'ONBOARDING' ? ['pendiente_bo'] : [])]
+      .map(normalizeStatus));
+  if (status && !searchableStatuses.has(statusFilter)) {
     return res.status(400).json({ error: 'El estado del ticket no es válido.' });
+  }
+  if (userCode && ticketera !== 'ONBOARDING') {
+    return res.status(400).json({ error: 'El filtro de usuario solo está disponible para ONBOARDING.' });
   }
   if (userCode && !ALLOWED_TICKET_USERS.has(userCode.toUpperCase()) && !/^u\d{6}$/i.test(userCode)) {
     return res.status(400).json({ error: 'El usuario del ticket no es válido.' });
@@ -586,11 +621,13 @@ router.get('/obtenerTickets', async (req, res) => {
   }
 
   try {
-    console.time('RPC obtener_tickets');
     const { data, error } = await supabase.rpc('obtener_tickets', {
-      p_busqueda: 'ONBOARDING'
+      p_servicio: ticketera,
+      p_busqueda: search || 'All',
+      p_fecha_desde: dateFrom || null,
+      p_fecha_hasta: dateTo || null,
+      p_lider: leader || null
     });
-    console.timeEnd('RPC obtener_tickets');
     if (error) {
       console.error('Error al obtener tickets:', error);
       return res.status(500).json({
@@ -603,93 +640,58 @@ router.get('/obtenerTickets', async (req, res) => {
       return res.status(502).json({ error: 'La respuesta de tickets no tiene el formato esperado.' });
     }
 
-    const statusValue = (ticket) => {
-      const value = String(ticket.estado_actual || ticket.estado || ticket.status || '').trim()
-        .toLocaleLowerCase('es')
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[\s-]+/g, '_');
-      const aliases = {
-        'en_gestion': 'en_curso',
-        'reportado': 'pendiente',
-        'pendiente_de_bo': 'pendiente_bo',
-        'cancelado_duplicado': 'cancelado_duplicado',
-        'cancelado_no_corresponde': 'cancelado_no_corresponde'
-      };
-      return aliases[value] || value;
-    };
-    const ticketType = (ticket) => {
-      const value = String(ticket.tipo_reg || ticket.type || ticket.tipo || '').trim().toLowerCase();
-      if (value === 'ticket') return 'ticket';
-      if (value === 'itracker' || value === 'it') return 'itracker';
-      return value;
-    };
-    const dateValue = (ticket) => {
-      const value = ticket.created_at
-        || ticket.fecha_creacion
-        || ticket.fecha_alta
-        || ticket.fecha_registro
-        || ticket.fecha_inconveniente
-        || '';
-      return String(value).slice(0, 10);
-    };
-    const searchValue = search && search.toLowerCase() !== 'all'
-      ? search.toLocaleLowerCase('es')
-      : '';
+    if (data.some((ticket) => !ticket || typeof ticket !== 'object' || Array.isArray(ticket))) {
+      console.error('obtener_tickets devolvió un ticket con formato inválido.');
+      return res.status(502).json({ error: 'La respuesta contiene tickets con formato inválido.' });
+    }
 
-    const tickets = data.filter((ticket) => {
-      const { imagenes, ...searchableTicket } = ticket;
-      if (searchValue
-        && !JSON.stringify(searchableTicket).toLocaleLowerCase('es').includes(searchValue)) return false;
-      if (requesterEmail && String(ticket.email || '').trim().toLowerCase() !== requesterEmail) return false;
-      if (type && ticketType(ticket) !== type) return false;
-      if (status && statusValue(ticket) !== status) return false;
+    const userEmail = requesterEmail;
+    const filteredTickets = data.filter((ticket) => {
+      if (userEmail && String(ticket.email || '').trim().toLowerCase() !== userEmail) return false;
+      const rawType = String(ticket.tipo_reg || ticket.type || ticket.tipo || '').trim().toLowerCase();
+      const ticketType = rawType === 'it' ? 'itracker' : rawType;
+      if (type && ticketType !== type) return false;
+      const rawStatus = String(ticket.estado_actual || ticket.estado || ticket.status || '');
+      const normalizedStatus = normalizeStatus(rawStatus);
+      const statusAliases = {
+        en_gestion: 'en_curso',
+        pendiente_de_bo: 'pendiente_bo'
+      };
+      if (status && (statusAliases[normalizedStatus] || normalizedStatus) !== statusFilter) return false;
       const code = String(ticket.usuario || ticket.user_code || ticket.usuario_u_teco || ticket.uteco || '')
         .trim()
         .toLowerCase();
       if (userCode && code !== userCode) return false;
-      const created = dateValue(ticket);
-      if (dateFrom && created < dateFrom) return false;
-      if (dateTo && created > dateTo) return false;
       return true;
     });
 
-    const ticketsConImagenes = await Promise.all(
-      tickets.map(async (ticket) => {
-        const imagenes = await Promise.all(
-          (ticket.imagenes ?? []).map(async (imagen) => {
-            const { data: urlData, error: urlError } =
-              await supabase.storage
-                .from('ticketera-imagenes')
-                .createSignedUrl(imagen.ruta_archivo, 3600);
+    const ticketsWithImageUrls = await Promise.all(filteredTickets.map(async (ticket) => {
+      const images = Array.isArray(ticket.imagenes) ? ticket.imagenes : [];
+      const signedImages = await Promise.all(images.map(async (image) => {
+        if (!image || typeof image !== 'object' || Array.isArray(image)) {
+          throw new Error(`Una imagen del ticket ${ticket.id} no tiene el formato esperado.`);
+        }
+        const { data: urlData, error: urlError } = await supabase.storage
+          .from('ticketera-imagenes')
+          .createSignedUrl(image.ruta_archivo, 3600);
+        if (urlError) {
+          console.error(`Error al generar URL de imagen ${image.id}:`, urlError);
+          return { ...image, url: null };
+        }
+        return { ...image, url: urlData.signedUrl };
+      }));
+      return {
+        ...ticket,
+        tipo_reg: ticket.tipo_reg || 'TICKET',
+        tipo_ticketera: ticket.tipo_ticketera || (
+          ticketera === 'VENTAS' ? 2 : ticketera === 'DEGRA' ? 4 : 3
+        ),
+        observaciones: Array.isArray(ticket.observaciones) ? ticket.observaciones : [],
+        imagenes: signedImages
+      };
+    }));
 
-            if (urlError) {
-              console.error(
-                `Error al generar URL de imagen ${imagen.id}:`,
-                urlError
-              );
-
-              return {
-                ...imagen,
-                url: null
-              };
-            }
-
-            return {
-              ...imagen,
-              url: urlData.signedUrl
-            };
-          })
-        );
-
-        return {
-          ...ticket,
-          imagenes
-        };
-      })
-    );
-
-    return res.json(ticketsConImagenes);
+    return res.json(ticketsWithImageUrls);
   } catch (error) {
     console.error('Error inesperado al obtener tickets:', error);
 

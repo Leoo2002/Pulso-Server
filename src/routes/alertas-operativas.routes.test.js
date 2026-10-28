@@ -255,7 +255,7 @@ test('rejects unsupported image types before upload', async () => {
   assert.equal(uploadedFiles.length, 0);
 });
 
-test('deletes an alert through its schema RPC and removes its stored image', async () => {
+test('deletes an alert through the public RPC and removes its stored image', async () => {
   tools = [{ nombre: 'TICKETERA_ONBOARDING' }];
   const alert = {
     id: 21,
@@ -284,7 +284,6 @@ test('deletes an alert through its schema RPC and removes its stored image', asy
     alerta: alert
   });
   assert.deepEqual(calls.at(-1), {
-    schema: 'tickets_soporte',
     name: 'eliminar_alerta_operativa',
     params: { p_id: 21 }
   });

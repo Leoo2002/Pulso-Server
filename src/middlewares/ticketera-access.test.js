@@ -12,6 +12,8 @@ let toolsError;
 let calls;
 let caseType;
 let caseError;
+let createResult;
+let createError;
 const query = {
   select() { return this; },
   eq() { return this; },
@@ -23,12 +25,15 @@ require.cache[databasePath] = {
     rpc: async (name, params) => {
       calls.push({ name, params });
       if (name === 'obtener_herramientas_usuario') return { data: tools, error: toolsError };
+      if (name === 'crear_ticket_ticketera') return { data: createResult, error: createError };
+      if (name === 'actualizar_estado_ticketera') return { data: createResult, error: createError };
+      if (name === 'obtener_tickets') return { data: [], error: null };
       throw new Error(`Unexpected business RPC: ${name}`);
     },
     schema: () => ({ from: () => query })
   } }
 };
-const { requireTicketeraAccess, sendTicketeraAccess } = require('./ticketera-access');
+const { requireTicketeraAccess, sendTicketeraAccess, normalizeTicketera } = require('./ticketera-access');
 const tickets = require('../routes/tickets.routes');
 const ticketera = require('../routes/ticketera.routes');
 const degra = require('../routes/degra-ticketera.routes');
@@ -71,6 +76,117 @@ beforeEach(() => {
   calls = [];
   caseType = 'ONBOARDING';
   caseError = null;
+  createResult = { ok: true, caso_id: 23, id_tck: 'ONB-23', tipo_reg: 'ITRACKER', tipo_ticketera: 3 };
+  createError = null;
+});
+
+test('maps numeric service IDs to ticketera access names', () => {
+  assert.equal(normalizeTicketera(2), 'VENTAS');
+  assert.equal(normalizeTicketera(3), 'ONBOARDING');
+  assert.equal(normalizeTicketera(4), 'DEGRA');
+  assert.equal(normalizeTicketera('3'), 'ONBOARDING');
+});
+
+test('creates an IT case through the shared RPC with the authenticated creator email', async () => {
+  tools = [{ id_herramienta: 10, nombre: 'TICKETERA_ONBOARDING' }];
+  const response = await request('/crearTicketera', {
+    method: 'POST',
+    body: {
+      servicio: 'IT',
+      ticket: {
+        email: 'forged@example.com',
+        tipo: 'eTracker',
+        motivo: 'App',
+        numero_gestion: 'IT-123'
+      }
+    }
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(await response.json(), createResult);
+  assert.deepEqual(calls.find(({ name }) => name === 'crear_ticket_ticketera'), {
+    name: 'crear_ticket_ticketera',
+    params: {
+      p_servicio: 'IT',
+      p_ticket: {
+        email: 'real@example.com',
+        tipo: 'eTracker',
+        motivo: 'App',
+        numero_gestion: 'IT-123'
+      }
+    }
+  });
+});
+
+test('saves the Ventas IT number through the state RPC', async () => {
+  tools = [{ id_herramienta: 11, nombre: 'TICKETERA_VENTAS' }];
+  caseType = 2;
+  const response = await request('/actualizarEstadoTicketeraVentas', {
+    method: 'PATCH',
+    range: 5,
+    body: {
+      caso_id: 23,
+      estado: 'cerrado ok',
+      observacion: 'Se informa número IT',
+      numero_it: 'IT-2026-1234'
+    }
+  });
+
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(calls.find(({ name }) => name === 'actualizar_estado_ticketera'), {
+    name: 'actualizar_estado_ticketera',
+    params: {
+      p_caso_id: 23,
+      p_estado: 'cerrado ok',
+      p_observacion: 'Se informa número IT',
+      p_email: 'real@example.com',
+      p_numero_it: 'IT-2026-1234'
+    }
+  });
+});
+
+test('passes the selected leader to the unified ticket listing RPC', async () => {
+  tools = [{ id_herramienta: 11, nombre: 'TICKETERA_VENTAS' }];
+  const response = await request('/obtenerTickets?servicio=VENTAS&p_busqueda=All&lider=Equipo%20Ventas');
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.find(({ name }) => name === 'obtener_tickets'), {
+    name: 'obtener_tickets',
+    params: {
+      p_servicio: 'VENTAS',
+      p_busqueda: 'All',
+      p_fecha_desde: null,
+      p_fecha_hasta: null,
+      p_lider: 'Equipo Ventas'
+    }
+  });
+});
+
+test('saves the Degra IT number through the state RPC', async () => {
+  tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+  caseType = 4;
+  const response = await request('/actualizarEstadoTicketeraDegra', {
+    method: 'PATCH',
+    range: 5,
+    body: {
+      caso_id: 23,
+      estado: 'resuelto',
+      observacion: 'Seguimiento iniciado',
+      numero_it: 'IT-2026-456'
+    }
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.find(({ name }) => name === 'actualizar_estado_ticketera'), {
+    name: 'actualizar_estado_ticketera',
+    params: {
+      p_caso_id: 23,
+      p_estado: 'resuelto',
+      p_observacion: 'Seguimiento iniciado',
+      p_email: 'real@example.com',
+      p_numero_it: 'IT-2026-456'
+    }
+  });
 });
 
 function request(path, { range = 0, email = 'real@example.com', method = 'GET', body, token, form } = {}) {
@@ -156,7 +272,7 @@ test('blocks every ticketera surface before business RPCs for users without assi
     ['GET', '/tickets/00000000-0000-4000-8000-000000000001/attachments/0/download'],
     ['POST', '/tickets'], ['PATCH', '/tickets/00000000-0000-4000-8000-000000000001/state'],
     ['GET', '/obtenerTickets'], ['GET', '/obtenerTicketsVentas'], ['GET', '/obtenerTicketsDegra'],
-    ['POST', '/crearTicketeraTicket'], ['POST', '/crearIT'], ['POST', '/crearTicketeraTicketVentas'],
+    ['POST', '/crearTicketera'], ['POST', '/crearTicketeraTicket'], ['POST', '/crearIT'], ['POST', '/crearTicketeraTicketVentas'],
     ['POST', '/crearTicketeraTicketDegra'], ['PATCH', '/actualizarEstadoTicketera'],
     ['PATCH', '/actualizarEstadoTicketeraVentas'], ['PATCH', '/actualizarEstadoTicketeraDegra'],
     ['POST', '/subirImagenesTicketera'], ['GET', '/lideresTck'],

@@ -3,13 +3,19 @@ const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
 const { hasBackOfficeAccess } = require('../utils/ticket-access');
-const { requireTicketeraAccess, hasTicketeraAccess, normalizeTicketera, requireTicketeraCase } = require('../middlewares/ticketera-access');
+const {
+  requireTicketeraAccess,
+  hasTicketeraAccess,
+  normalizeTicketera,
+  requireTicketeraCase
+} = require('../middlewares/ticketera-access');
+const { createTicketeraCase } = require('../services/ticketera-create.service');
 
 router.use(['/crearTicketeraTicket', '/crearIT', '/actualizarEstadoTicketera', '/lideresTck'],
   requireTicketeraAccess('ONBOARDING'));
 router.use(['/crearTicketeraTicketVentas', '/obtenerTicketsVentas', '/actualizarEstadoTicketeraVentas'],
   requireTicketeraAccess('VENTAS'));
-router.use(['/subirImagenesTicketera', '/lideresTicketera'], requireTicketeraAccess());
+router.use(['/crearTicketera', '/subirImagenesTicketera', '/lideresTicketera'], requireTicketeraAccess());
 
 const multer = require('multer');
 const path = require('path');
@@ -56,26 +62,104 @@ const ESTADOS_TICKETERA_VENTAS = new Set([
 ]);
 const LIDERES_TICKETERAS = new Set(['VENTAS', 'ONBOARDING', 'ABONO/DEGRA']);
 
-const obtenerCasoIdRpc = (result) => {
-  const value = result && typeof result === 'object' && !Array.isArray(result)
-    ? result.caso_id ?? result.id
-    : result;
-  const casoId = Number(value);
-  return Number.isSafeInteger(casoId) && casoId > 0 ? casoId : null;
-};
+function validateCreatePayload(service, ticket) {
+  const salesRequired = [
+    'usuario_teco', 'nombre', 'lider', 'canal', 'tipo_venta', 'motivo',
+    'submotivo', 'numero_gestion', 'dni_cliente', 'telefono_contacto', 'comentario_carga'
+  ];
+  const degraRequired = [
+    'canal', 'usuario', 'nombre', 'requiere_contacto', 'lider', 'site_ubicacion',
+    'especialidad', 'tipo_reclamo_circuito', 'motivo_principal', 'submotivo',
+    'linea_msisdn', 'detalle_observacion'
+  ];
+  const required = service === 'VENTAS' ? salesRequired : service === 'DEGRA' ? degraRequired : [];
+  if (required.some((field) => typeof ticket[field] !== 'string' || !ticket[field].trim())) {
+    return `Completá todos los campos obligatorios del ticket de ${service}.`;
+  }
+  const maxLengths = service === 'VENTAS'
+    ? {
+      usuario_teco: 80, nombre: 150, lider: 150, canal: 120, tipo_venta: 120,
+      motivo: 150, submotivo: 150, numero_gestion: 80, dni_cliente: 12,
+      telefono_contacto: 30, comentario_carga: 5000, email_cliente: 254
+    }
+    : service === 'DEGRA'
+      ? {
+        canal: 120, usuario: 80, nombre: 150, lider: 150, site_ubicacion: 150,
+        especialidad: 150, telefono_contacto: 30, email_cliente: 254,
+        tipo_reclamo_circuito: 150, motivo_principal: 150, submotivo: 150,
+        numero_caso: 80, linea_msisdn: 40, detalle_observacion: 5000
+      }
+      : {};
+  const invalidField = Object.entries(maxLengths).find(([field, maxLength]) =>
+    ticket[field] !== undefined
+    && ticket[field] !== null
+    && (typeof ticket[field] !== 'string' || ticket[field].length > maxLength)
+  );
+  if (invalidField) return `Revisá el formato o el largo del campo ${invalidField[0]}.`;
+  if (ticket.email_cliente !== undefined && ticket.email_cliente !== null
+    && typeof ticket.email_cliente !== 'string') {
+    return 'El campo email_cliente debe ser texto.';
+  }
+  if (service === 'VENTAS') {
+    if (!/^[0-9]{6,12}$/.test(ticket.dni_cliente.trim())
+      || !/^[+0-9() -]{7,30}$/.test(ticket.telefono_contacto.trim())) {
+      return 'Revisá el formato de los datos del ticket de Ventas.';
+    }
+    if (ticket.email_cliente && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ticket.email_cliente.trim())) {
+      return 'Revisá el formato del mail de contacto.';
+    }
+  }
+  if (service === 'DEGRA') {
+    const contactRequired = String(ticket.requiere_contacto).trim().toLocaleLowerCase('es');
+    if (!['true', 'false', 'si', 'sí', 'no'].includes(contactRequired)) {
+      return 'El campo requiere_contacto debe ser Sí o No.';
+    }
+    if (ticket.telefono_contacto && !/^[+0-9() -]{7,30}$/.test(ticket.telefono_contacto.trim())) {
+      return 'Revisá el formato del teléfono de contacto.';
+    }
+    if (ticket.email_cliente && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ticket.email_cliente.trim())) {
+      return 'Revisá el formato del mail de contacto.';
+    }
+  }
+  return '';
+}
 
-const actualizarTipoTicketeraCaso = async (casoId, tipoReg) => {
-  const { data, error } = await supabase.schema('tickets_soporte')
-    .from('ticketera_casos')
-    .update({ tipo_ticketera: 'ONBOARDING' })
-    .eq('id', casoId)
-    .eq('tipo_reg', tipoReg)
-    .select('id')
-    .maybeSingle();
+router.post('/crearTicketera', async (req, res) => {
+  const service = typeof req.body?.servicio === 'string' ? req.body.servicio.trim().toUpperCase() : '';
+  const serviceAliases = { IT: 'IT', ITRACKER: 'IT', ONBO: 'ONBOARDING', 'ABONO/DEGRA': 'DEGRA' };
+  const normalizedService = serviceAliases[service] || service;
+  const allowedServices = new Set(['ONBOARDING', 'IT', 'SOPORTE', 'TICKET', 'VENTAS', 'DEGRA']);
+  const ticket = req.body?.ticket;
 
-  if (error) throw error;
-  if (!data) throw new Error(`No se encontró el caso ${casoId} para asignar la ticketera ONBOARDING.`);
-};
+  if (!allowedServices.has(normalizedService)) {
+    return res.status(400).json({ error: 'El servicio de Ticketera no es válido.' });
+  }
+  const accessService = ['VENTAS', 'DEGRA'].includes(normalizedService) ? normalizedService : 'ONBOARDING';
+  if (!hasTicketeraAccess(req, accessService)) {
+    return res.status(403).json({ error: 'No tienes permisos para acceder a esta ticketera.' });
+  }
+  if (!ticket || typeof ticket !== 'object' || Array.isArray(ticket)) {
+    return res.status(400).json({ error: 'Los datos del ticket son obligatorios.' });
+  }
+  const creatorEmail = typeof req.user?.email === 'string' ? req.user.email.trim() : '';
+  if (!creatorEmail) {
+    return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
+  }
+  const validationError = validateCreatePayload(normalizedService, ticket);
+  if (validationError) return res.status(400).json({ error: validationError });
+
+  try {
+    const result = await createTicketeraCase(normalizedService, ticket, creatorEmail);
+    return res.status(201).json(result);
+  } catch (error) {
+    console.error(`Error al crear ticket de ${normalizedService}:`, error);
+    const statusCode = error.code === 'P0001' || error.code === '22007' ? 400 : 500;
+    return res.status(statusCode).json({
+      error: `No se pudo crear el ticket de ${normalizedService}.`,
+      ...(statusCode === 400 ? { detalle: error.message } : {})
+    });
+  }
+});
 
 const recibirImagenes = (req, res, next) => {
   upload.array('imagenes', 3)(req, res, (error) => {
@@ -101,71 +185,16 @@ router.post('/crearTicketeraTicket', async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabase.rpc(
-      'crear_ticket',
-      {
-        p_ticket: { ...ticket, tipo_ticketera: 'ONBOARDING' }
-      }
+    const result = await createTicketeraCase(
+      'ONBOARDING',
+      ticket,
+      typeof req.user?.email === 'string' ? req.user.email.trim() : ''
     );
-
-    if (error) {
-      console.error('Error al crear ticket:', error);
-
-      return res.status(500).json({
-        error: 'No se pudo crear el ticket.',
-        detalle: error.message
-      });
-    }
-
-    const result = data && typeof data === 'object' && !Array.isArray(data)
-      ? data
-      : { caso_id: data };
-    const casoId = obtenerCasoIdRpc(result);
-    if (!casoId) {
-      console.error('crear_ticket devolvió una respuesta sin caso_id válido:', data);
-      return res.status(502).json({
-        error: 'El ticket se creó, pero no se pudo confirmar su ID para asignar la ticketera ONBOARDING.'
-      });
-    }
-    try {
-      await actualizarTipoTicketeraCaso(casoId, 'TICKET');
-    } catch (error) {
-      console.error(`El ticket ${casoId} se creó, pero no se pudo asignar ONBOARDING:`, error);
-      return res.status(500).json({
-        error: `El ticket se creó (caso ${casoId}), pero no se pudo asignar la ticketera ONBOARDING. No vuelvas a enviarlo; contactá a soporte.`
-      });
-    }
-    let idTck = typeof result.id_tck === 'string' && result.id_tck.trim()
-      ? result.id_tck.trim()
-      : null;
-
-    if (!idTck && Number.isSafeInteger(casoId) && casoId > 0) {
-      try {
-        const { data: caso, error: errorIdTck } = await supabase
-          .schema('tickets_soporte')
-          .from('ticketera_casos')
-          .select('id_tck')
-          .eq('id', casoId)
-          .maybeSingle();
-
-        if (errorIdTck) {
-          console.error('El ticket se creó, pero no se pudo consultar su id_tck:', errorIdTck);
-        } else if (typeof caso?.id_tck === 'string' && caso.id_tck.trim()) {
-          idTck = caso.id_tck.trim();
-        }
-      } catch (errorIdTck) {
-        console.error('El ticket se creó, pero no se pudo consultar su id_tck:', errorIdTck);
-      }
-    }
-
-    return res.status(201).json({ ...result, id_tck: idTck });
-
+    return res.status(201).json(result);
   } catch (error) {
     console.error('Error en el servidor al crear ticket:', error);
-
-    return res.status(500).json({
-      error: 'Error interno del servidor.'
-    });
+    const statusCode = error.code === 'P0001' || error.code === '22007' ? 400 : 500;
+    return res.status(statusCode).json({ error: 'No se pudo crear el ticket.', ...(statusCode === 400 ? { detalle: error.message } : {}) });
   }
 });
 
@@ -233,64 +262,12 @@ router.post('/crearTicketeraTicketVentas', async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabase.rpc('crear_ticket_ventas', {
-      p_ticket: ticket
-    });
-
-    if (error) {
-      console.error('Error al crear ticket de Ventas:', error);
-      return res.status(500).json({
-        error: 'No se pudo crear el ticket de Ventas.',
-        detalle: error.message
-      });
-    }
-
-    const casoId = Number(data);
-    if (!Number.isSafeInteger(casoId) || casoId <= 0) {
-      console.error('crear_ticket_ventas devolvió un caso_id no válido:', data);
-      return res.status(502).json({
-        error: 'El ticket se creó, pero no se pudo confirmar su ID. No vuelvas a enviarlo; contactá a soporte.'
-      });
-    }
-    const { data: updatedCase, error: emailError } = await supabase.schema('tickets_soporte')
-      .from('ticketera_casos')
-      .update({ email: creatorEmail })
-      .eq('id', casoId)
-      .eq('tipo_reg', 'TICKET')
-      .eq('tipo_ticketera', 'VENTAS')
-      .select('id')
-      .maybeSingle();
-    if (emailError || !updatedCase) {
-      console.error(`El ticket de Ventas ${casoId} se creó, pero no se pudo guardar el correo creador:`, emailError);
-      return res.status(500).json({
-        error: `El ticket se creó (caso ${casoId}), pero no se pudo guardar el correo de creación. No vuelvas a enviarlo; contactá a soporte.`
-      });
-    }
-
-    let idTck = null;
-    try {
-      const { data: caso, error: errorIdTck } = await supabase
-        .schema('tickets_soporte')
-        .from('ticketera_casos')
-        .select('id_tck')
-        .eq('id', casoId)
-        .maybeSingle();
-
-      if (errorIdTck) {
-        console.error('El ticket de Ventas se creó, pero no se pudo consultar su id_tck:', errorIdTck);
-      } else if (typeof caso?.id_tck === 'string' && caso.id_tck.trim()) {
-        idTck = caso.id_tck.trim();
-      }
-    } catch (errorIdTck) {
-      console.error('El ticket de Ventas se creó, pero no se pudo consultar su id_tck:', errorIdTck);
-    }
-
-    return res.status(201).json({ caso_id: data, id_tck: idTck });
+    const result = await createTicketeraCase('VENTAS', ticket, creatorEmail);
+    return res.status(201).json(result);
   } catch (error) {
     console.error('Error en el servidor al crear ticket de Ventas:', error);
-    return res.status(500).json({
-      error: 'Error interno del servidor.'
-    });
+    const statusCode = error.code === 'P0001' || error.code === '22007' ? 400 : 500;
+    return res.status(statusCode).json({ error: 'No se pudo crear el ticket de Ventas.', ...(statusCode === 400 ? { detalle: error.message } : {}) });
   }
 });
 
@@ -308,15 +285,19 @@ router.get('/obtenerTicketsVentas', async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabase.rpc('obtener_tickets_ventas', {
-      p_busqueda: search || 'All'
+    const { data, error } = await supabase.rpc('obtener_tickets', {
+      p_servicio: 'VENTAS',
+      p_busqueda: search || 'All',
+      p_fecha_desde: null,
+      p_fecha_hasta: null,
+      p_lider: null
     });
     if (error) {
       console.error('Error al obtener tickets de Ventas:', error);
       return res.status(500).json({ error: 'No se pudieron obtener los tickets de Ventas.' });
     }
     if (!Array.isArray(data)) {
-      console.error('La función obtener_tickets_ventas no devolvió una lista.');
+      console.error('La función obtener_tickets no devolvió una lista para Ventas.');
       return res.status(502).json({ error: 'La respuesta de tickets de Ventas no tiene el formato esperado.' });
     }
 
@@ -348,7 +329,7 @@ router.get('/obtenerTicketsVentas', async (req, res) => {
       return {
         ...ticket,
         tipo_reg: ticket.tipo_reg || 'TICKET',
-        tipo_ticketera: ticket.tipo_ticketera || 'VENTAS',
+        tipo_ticketera: ticket.tipo_ticketera || 2,
         observaciones: Array.isArray(ticket.observaciones) ? ticket.observaciones : [],
         imagenes
       };
@@ -373,46 +354,16 @@ router.post('/crearIT', async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabase.rpc(
-      'crear_it',
-      {
-        p_it: { ...it, tipo_ticketera: 'ONBOARDING' }
-      }
+    const result = await createTicketeraCase(
+      'IT',
+      it,
+      typeof req.user?.email === 'string' ? req.user.email.trim() : ''
     );
-
-    if (error) {
-      console.error('Error al crear IT:', error);
-
-      return res.status(500).json({
-        error: 'No se pudo crear el IT.',
-        detalle: error.message
-      });
-    }
-
-    const casoId = obtenerCasoIdRpc(data);
-    if (!casoId) {
-      console.error('crear_it devolvió una respuesta sin caso_id válido:', data);
-      return res.status(502).json({
-        error: 'El IT se creó, pero no se pudo confirmar su ID para asignar la ticketera ONBOARDING.'
-      });
-    }
-    try {
-      await actualizarTipoTicketeraCaso(casoId, 'ITRACKER');
-    } catch (error) {
-      console.error(`El IT ${casoId} se creó, pero no se pudo asignar ONBOARDING:`, error);
-      return res.status(500).json({
-        error: `El IT se creó (caso ${casoId}), pero no se pudo asignar la ticketera ONBOARDING. No vuelvas a enviarlo; contactá a soporte.`
-      });
-    }
-
-    return res.status(201).json(data);
-
+    return res.status(201).json(result);
   } catch (error) {
     console.error('Error en el servidor al crear IT:', error);
-
-    return res.status(500).json({
-      error: 'Error interno del servidor.'
-    });
+    const statusCode = error.code === 'P0001' || error.code === '22007' ? 400 : 500;
+    return res.status(statusCode).json({ error: 'No se pudo crear el IT.', ...(statusCode === 400 ? { detalle: error.message } : {}) });
   }
 });
 
@@ -445,7 +396,8 @@ router.patch('/actualizarEstadoTicketera', requireTicketeraCase('ONBOARDING'), a
       p_caso_id: casoId,
       p_estado: estado,
       p_observacion: observacion,
-      p_email: typeof req.user?.email === 'string' ? req.user.email.trim() : null
+      p_email: typeof req.user?.email === 'string' ? req.user.email.trim() : null,
+      p_numero_it: null
     });
 
     if (error) {
@@ -482,10 +434,18 @@ router.patch('/actualizarEstadoTicketeraVentas', requireTicketeraCase('VENTAS'),
   }
   const estado = typeof req.body?.estado === 'string' ? req.body.estado.trim() : '';
   const observacion = typeof req.body?.observacion === 'string' ? req.body.observacion.trim() : '';
+  const numeroIt = req.body?.numero_it === undefined || req.body?.numero_it === null
+    ? ''
+    : typeof req.body.numero_it === 'string'
+      ? req.body.numero_it.trim()
+      : null;
   const email = typeof req.user?.email === 'string' ? req.user.email.trim() : '';
 
   if (!Number.isSafeInteger(casoId) || casoId <= 0) {
     return res.status(400).json({ error: 'El caso_id debe ser un ID numérico válido.' });
+  }
+  if (numeroIt === null || (numeroIt && numeroIt.length > 100)) {
+    return res.status(400).json({ error: 'El número de IT debe ser texto y no puede superar los 100 caracteres.' });
   }
   if (estado && !ESTADOS_TICKETERA_VENTAS.has(estado)) {
     return res.status(400).json({ error: 'Seleccioná un estado válido para Ventas.' });
@@ -501,6 +461,29 @@ router.patch('/actualizarEstadoTicketeraVentas', requireTicketeraCase('VENTAS'),
   }
 
   try {
+    if (numeroIt) {
+      if (!estado || !observacion) {
+        return res.status(400).json({
+          error: 'Para cargar el número de IT, indicá un estado y una observación.'
+        });
+      }
+      const { data, error } = await supabase.rpc('actualizar_estado_ticketera', {
+        p_caso_id: casoId,
+        p_estado: estado,
+        p_observacion: observacion,
+        p_email: email,
+        p_numero_it: numeroIt
+      });
+      if (error) {
+        console.error('Error al actualizar ticket de Ventas con número de IT:', error);
+        if (error.message?.includes('No existe un caso')) {
+          return res.status(404).json({ error: 'El caso no existe o no pertenece a la ticketera de Ventas.' });
+        }
+        return res.status(500).json({ error: 'No se pudo actualizar el ticket de Ventas.' });
+      }
+      return res.json(data);
+    }
+
     const { data, error } = await supabase.rpc('actualizar_ticket_ventas', {
       p_caso_id: casoId,
       p_email: email,
@@ -647,7 +630,7 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
       }
     }
 
-    if (String(caso.tipo_ticketera).toUpperCase() === 'VENTAS'
+    if (Number(caso.tipo_ticketera) === 2
       && archivos.some((archivo) => !['image/jpeg', 'image/png'].includes(archivo.mimetype))) {
       return res.status(400).json({
         error: 'La ticketera Ventas solo admite imágenes JPG o PNG.'

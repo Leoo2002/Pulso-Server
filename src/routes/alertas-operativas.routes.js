@@ -260,8 +260,7 @@ router.delete('/alertas-operativas/:id', requireServiceAccess, async (req, res) 
   }
 
   try {
-    const { data, error } = await supabase.schema('tickets_soporte')
-      .rpc('eliminar_alerta_operativa', { p_id: alertId });
+    const { data, error } = await supabase.rpc('eliminar_alerta_operativa', { p_id: alertId });
     if (error) {
       console.error('Error al eliminar alerta operativa:', error);
       if (typeof error.message === 'string' && error.message.includes('No existe una alerta')) {

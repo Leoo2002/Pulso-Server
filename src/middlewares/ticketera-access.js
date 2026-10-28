@@ -8,7 +8,13 @@ const TICKET_TOOLS = [
 const ALL_TICKETERA_RANGES = new Set([1, 3, 4]);
 
 function normalizeTicketera(value) {
-  const name = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  const name = typeof value === 'string' || typeof value === 'number'
+    ? String(value).trim().toUpperCase()
+    : '';
+  if (name === '2') return 'VENTAS';
+  if (name === '3') return 'ONBOARDING';
+  if (name === '4') return 'DEGRA';
+  if (name === '1') return 'SOPORTE';
   return ['ABONO/DEGRA', 'ABONO-DEGRA'].includes(name) ? 'DEGRA' : name;
 }
 

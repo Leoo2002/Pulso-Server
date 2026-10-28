@@ -2,6 +2,7 @@ const express = require('express');
 const { supabase } = require('../config/database');
 const { hasBackOfficeAccess } = require('../utils/ticket-access');
 const { requireTicketeraAccess } = require('../middlewares/ticketera-access');
+const { createTicketeraCase } = require('../services/ticketera-create.service');
 const router = express.Router();
 const ALLOWED_STATUSES = new Set([
   'pendiente',
@@ -95,52 +96,18 @@ router.post('/crearTicketeraTicketDegra', requireDegraTool, async (req, res) => 
 
   const creatorEmail = req.user.email.trim();
   try {
-    const { data, error } = await supabase.rpc('crear_ticket_degra', {
-      p_ticket: {
-        ...normalized.ticket,
-        observacion_inicial: normalized.ticket.detalle_observacion,
-        email: creatorEmail
-      }
-    });
-    if (error) {
-      console.error('Error al crear ticket de Degra:', error);
-      return res.status(500).json({ error: 'No se pudo crear el ticket de Degra.', detalle: error.message });
-    }
-
-    const result = data && typeof data === 'object' && !Array.isArray(data)
-      ? data
-      : { caso_id: data };
-    const casoId = Number(result.caso_id ?? result.id);
-    if (!Number.isSafeInteger(casoId) || casoId <= 0) {
-      console.error('crear_ticket_degra devolvió una respuesta sin caso_id válido:', data);
-      return res.status(502).json({
-        error: 'El ticket se creó, pero no se pudo confirmar su ID. No vuelvas a enviarlo; contactá a soporte.'
-      });
-    }
-
-    const { data: updatedCase, error: emailError } = await supabase.schema('tickets_soporte')
-      .from('ticketera_casos')
-      .update({ email: creatorEmail })
-      .eq('id', casoId)
-      .eq('tipo_reg', 'TICKET')
-      .eq('tipo_ticketera', 'DEGRA')
-      .select('id')
-      .maybeSingle();
-    if (emailError || !updatedCase) {
-      console.error(`El ticket de Degra ${casoId} se creó, pero no se pudo guardar el correo creador:`, emailError);
-      return res.status(500).json({
-        error: `El ticket se creó (caso ${casoId}), pero no se pudo guardar el correo de creación. No vuelvas a enviarlo; contactá a soporte.`
-      });
-    }
-
-    return res.status(201).json({
-      ...result,
-      caso_id: casoId,
-      id_tck: typeof result.id_tck === 'string' ? result.id_tck : null
-    });
+    const result = await createTicketeraCase('DEGRA', {
+      ...normalized.ticket,
+      observacion_inicial: normalized.ticket.detalle_observacion
+    }, creatorEmail);
+    return res.status(201).json(result);
   } catch (error) {
     console.error('Error inesperado al crear ticket de Degra:', error);
-    return res.status(500).json({ error: 'Error interno del servidor.' });
+    const statusCode = error.code === 'P0001' || error.code === '22007' ? 400 : 500;
+    return res.status(statusCode).json({
+      error: 'No se pudo crear el ticket de Degra.',
+      ...(statusCode === 400 ? { detalle: error.message } : {})
+    });
   }
 });
 
@@ -158,15 +125,19 @@ router.get('/obtenerTicketsDegra', requireDegraTool, async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabase.rpc('obtener_tickets_degra', {
-      p_busqueda: search || 'All'
+    const { data, error } = await supabase.rpc('obtener_tickets', {
+      p_servicio: 'DEGRA',
+      p_busqueda: search || 'All',
+      p_fecha_desde: null,
+      p_fecha_hasta: null,
+      p_lider: null
     });
     if (error) {
       console.error('Error al obtener tickets de Degra:', error);
       return res.status(500).json({ error: 'No se pudieron obtener los tickets de Degra.' });
     }
     if (!Array.isArray(data)) {
-      console.error('obtener_tickets_degra no devolvió una lista.');
+      console.error('obtener_tickets no devolvió una lista para Degra.');
       return res.status(502).json({ error: 'La respuesta de tickets de Degra no tiene el formato esperado.' });
     }
     if (data.some((ticket) => !ticket || typeof ticket !== 'object' || Array.isArray(ticket))) {
@@ -199,7 +170,7 @@ router.get('/obtenerTicketsDegra', requireDegraTool, async (req, res) => {
       return {
         ...ticket,
         tipo_reg: ticket.tipo_reg || 'TICKET',
-        tipo_ticketera: 'DEGRA',
+        tipo_ticketera: 4,
         observaciones: Array.isArray(ticket.observaciones) ? ticket.observaciones : [],
         imagenes: signedImages
       };
@@ -232,6 +203,14 @@ router.patch('/actualizarEstadoTicketeraDegra', requireDegraTool, async (req, re
   if (!observacion || observacion.length > 500) {
     return res.status(400).json({ error: 'La observación es obligatoria y no puede superar los 500 caracteres.' });
   }
+  const numeroIt = req.body?.numero_it === undefined || req.body?.numero_it === null
+    ? null
+    : typeof req.body.numero_it === 'string'
+      ? req.body.numero_it.trim() || null
+      : undefined;
+  if (numeroIt === undefined || (numeroIt && numeroIt.length > 100)) {
+    return res.status(400).json({ error: 'El número de IT debe ser texto y no puede superar los 100 caracteres.' });
+  }
 
   try {
     const { data: caso, error: caseError } = await supabase.schema('tickets_soporte')
@@ -239,7 +218,7 @@ router.patch('/actualizarEstadoTicketeraDegra', requireDegraTool, async (req, re
       .select('id')
       .eq('id', casoId)
       .eq('tipo_reg', 'TICKET')
-      .eq('tipo_ticketera', 'DEGRA')
+      .eq('tipo_ticketera', 4)
       .maybeSingle();
     if (caseError) throw caseError;
     if (!caso) return res.status(404).json({ error: 'El caso no existe o no pertenece a la ticketera de Degra.' });
@@ -248,7 +227,8 @@ router.patch('/actualizarEstadoTicketeraDegra', requireDegraTool, async (req, re
       p_caso_id: casoId,
       p_estado: estado,
       p_observacion: observacion,
-      p_email: typeof req.user?.email === 'string' ? req.user.email.trim() : null
+      p_email: typeof req.user?.email === 'string' ? req.user.email.trim() : null,
+      p_numero_it: numeroIt
     });
     if (error) {
       console.error('Error al actualizar ticket de Degra:', error);
