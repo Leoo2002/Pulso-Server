@@ -31,7 +31,11 @@ before(async () => {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    if (req.headers['x-test-range']) req.user = { rango: req.headers['x-test-range'] };
+    if (req.headers['x-test-range']) req.user = { rango: req.headers['x-test-range'], email: 'user@example.com' };
+    // Permission middleware has its own integration matrix; these tests focus on analytics.
+    if (['0', '1', '2', '3', '4', '5'].includes(req.headers['x-test-range'])) {
+      req.ticketeraAccess = [{ ticketera: 'ONBOARDING' }];
+    }
     next();
   });
   app.use(router);
@@ -52,7 +56,7 @@ async function post(body, range = '2', detail = false, exporting = false) {
 test('export uses the same authenticated metrics permission and does not accept pagination or selection', async () => {
   for (const range of ['0', '', 'invalid', '7']) {
     calls = [];
-    assert.equal((await post({}, range, false, true)).status, 403);
+    assert.equal((await post({}, range, false, true)).status, range ? 403 : 401);
     assert.equal(calls.length, 0);
   }
   for (const body of [{ pagina: 1 }, { tamano: 100 }, { dimension: 'estado' }, { ignored: true }]) {
@@ -75,7 +79,7 @@ test('export returns all rows and columns, using applied filters without detail 
     granularidad: 'semana', zona_horaria: 'UTC' }, '5', false, true);
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), payload);
-  assert.deepEqual(calls.at(-1), { name: 'exportar_analitica_ticketera', params: {
+  assert.deepEqual(calls.at(-1), { name: 'exportar_analitica_ticketera_onboarding', params: {
     p_desde: '2026-10-01', p_hasta: '2026-10-24', p_lideres: ['A'], p_canales: ['digital'],
     p_tipos: ['ticket', 'itracker'], p_estados: ['resuelto'], p_granularidad: 'semana', p_zona_horaria: 'UTC'
   } });
@@ -99,7 +103,7 @@ test('export rejects missing rows, duplicate headers and malformed payloads rath
 test('JWT profile must allow metrics; rango 0 and missing/invalid profiles cannot call RPC', async () => {
   for (const range of ['0', '', 'invalid', '7']) {
     calls = [];
-    assert.equal((await post({}, range)).status, 403);
+    assert.equal((await post({}, range)).status, range ? 403 : 401);
     assert.equal(calls.length, 0);
   }
 });
@@ -111,7 +115,7 @@ test('multiple filters are passed as RPC arguments; null date means no limit', a
     granularidad: 'semana', zona_horaria: 'America/Argentina/Buenos_Aires' });
   assert.equal(response.status, 200);
   assert.deepEqual(calls.at(-1), {
-    name: 'obtener_analitica_ticketera',
+    name: 'obtener_analitica_ticketera_onboarding',
     params: { p_hasta: '2026-10-22', p_lideres: ['A', 'B'],
       p_canales: ['digital', 'telefonico'], p_tipos: ['ticket'], p_estados: [],
       p_granularidad: 'semana', p_zona_horaria: 'America/Argentina/Buenos_Aires' }
@@ -132,7 +136,7 @@ test('detail passes the selection and pagination, without granularity', async ()
   const response = await post({ dimension: 'submotivo', valor: 'Otros', motivo: 'delivery',
     pagina: 2, tamano: 20, granularidad: 'auto' }, '5', true);
   assert.equal(response.status, 200);
-  assert.deepEqual(calls.at(-1), { name: 'obtener_detalle_analitica_ticketera',
+  assert.deepEqual(calls.at(-1), { name: 'obtener_detalle_analitica_ticketera_onboarding',
     params: { p_dimension: 'submotivo', p_valor: 'Otros', p_motivo: 'delivery', p_pagina: 2, p_tamano: 20 } });
   for (const body of [{ pagina: 0 }, { tamano: 101 }, { pagina: 1.5 }]) {
     assert.equal((await post(body, '2', true)).status, 400);

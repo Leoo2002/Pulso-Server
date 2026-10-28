@@ -3,6 +3,7 @@ const multer = require('multer');
 const { randomUUID } = require('crypto');
 const { supabase } = require('../config/database');
 const { hasBackOfficeAccess } = require('../utils/ticket-access');
+const { loadTicketeraAccess } = require('../middlewares/ticketera-access');
 
 const router = express.Router();
 const IMAGE_BUCKET = 'ticketera-imagenes';
@@ -43,7 +44,11 @@ function receiveAlertImage(req, res, next) {
   });
 }
 
-async function requireServiceAccess(req, res, next) {
+function requireServiceAccess(req, res, next) {
+  return loadTicketeraAccess(req, res, () => authorizeService(req, res, next));
+}
+
+async function authorizeService(req, res, next) {
   const requestedService = typeof req.query.servicio === 'string'
     ? req.query.servicio.trim().toLocaleUpperCase('es')
     : typeof req.body?.servicio === 'string'
@@ -59,15 +64,7 @@ async function requireServiceAccess(req, res, next) {
   if (!email) return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
 
   try {
-    const { data, error } = await supabase.rpc('obtener_herramientas_usuario', { p_mail: email });
-    if (error) throw error;
-    if (!Array.isArray(data)) {
-      console.error('obtener_herramientas_usuario devolvió una respuesta inválida al autorizar alertas.');
-      return res.status(502).json({ error: 'No se pudieron verificar los permisos de alertas operativas.' });
-    }
-    const grantedTools = new Set(data
-      .filter((tool) => tool && typeof tool.nombre === 'string')
-      .map((tool) => tool.nombre.trim().toLocaleUpperCase('es')));
+    const grantedTools = new Set(req.ticketeraAccess.map((tool) => tool.nombre));
     if (!grantedTools.has(requiredTool)) {
       return res.status(403).json({ error: 'No tienes permisos para acceder a las alertas de este servicio.' });
     }

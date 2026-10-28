@@ -1,6 +1,7 @@
 const express = require('express');
 const { supabase } = require('../config/database');
 const { canUseTicketing } = require('../utils/ticket-access');
+const { requireTicketeraAccess } = require('../middlewares/ticketera-access');
 
 const router = express.Router();
 const arrays = ['lideres', 'canales', 'tipos', 'estados'];
@@ -47,8 +48,8 @@ function handler(detail, exporting = false) {
     }
     if (detail) delete params.p_granularidad;
     try {
-      const rpc = exporting ? 'exportar_analitica_ticketera'
-        : detail ? 'obtener_detalle_analitica_ticketera' : 'obtener_analitica_ticketera';
+      const rpc = exporting ? 'exportar_analitica_ticketera_onboarding'
+        : detail ? 'obtener_detalle_analitica_ticketera_onboarding' : 'obtener_analitica_ticketera_onboarding';
       const { data, error } = await supabase.rpc(rpc, params);
       if (error) {
         console.error(`Error en ${rpc}:`, error);
@@ -95,8 +96,8 @@ function handler(detail, exporting = false) {
   };
 }
 
-router.post('/tickets/analytics', handler(false));
-router.post('/tickets/analytics/detail', handler(true));
-router.post('/tickets/analytics/export', handler(false, true));
+router.post('/tickets/analytics', requireTicketeraAccess('ONBOARDING'), handler(false));
+router.post('/tickets/analytics/detail', requireTicketeraAccess('ONBOARDING'), handler(true));
+router.post('/tickets/analytics/export', requireTicketeraAccess('ONBOARDING'), handler(false, true));
 
 module.exports = router;

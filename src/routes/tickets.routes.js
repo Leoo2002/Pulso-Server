@@ -3,6 +3,7 @@ const express = require('express');
 const multer = require('multer');
 const { supabase } = require('../config/database');
 const { canUseTicketing, hasBackOfficeAccess, roleCode } = require('../utils/ticket-access');
+const { requireTicketeraAccess, hasTicketeraAccess } = require('../middlewares/ticketera-access');
 
 const router = express.Router();
 const BUCKET = 'pulso-ticket-attachments';
@@ -151,7 +152,7 @@ async function signAttachments(attachments) {
   }));
 }
 
-router.use(requireTicketAccess);
+router.use(['/tickets', '/obtenerTickets'], requireTicketAccess, requireTicketeraAccess('ONBOARDING'));
 
 router.get('/tickets/summary', async (_req, res) => {
   try {
@@ -160,6 +161,7 @@ router.get('/tickets/summary', async (_req, res) => {
       supabase.schema('tickets_soporte')
         .from('ticketera_casos')
         .select('id', { count: 'exact', head: true })
+        .eq('tipo_ticketera', 'ONBOARDING')
         .eq('tipo_reg', type)
     ));
     const results = await Promise.all(queries);
@@ -177,7 +179,11 @@ router.get('/tickets/summary', async (_req, res) => {
   }
 });
 
-router.get('/tickets/statistics', async (_req, res) => {
+router.get('/tickets/statistics', async (req, res) => {
+  // La RPC historica agrega todas las ticketeras y no admite un alcance.
+  if (!['ONBOARDING', 'VENTAS', 'DEGRA'].every((name) => hasTicketeraAccess(req, name))) {
+    return res.status(403).json({ error: 'Las estadisticas globales requieren acceso a todas las ticketeras. Usa la analitica de ONBOARDING.' });
+  }
   try {
     const { data, error } = await supabase.rpc('obtener_estadisticas_ticketera');
     if (error) {

@@ -1,8 +1,8 @@
 const express = require('express');
 const { supabase } = require('../config/database');
 const { hasBackOfficeAccess } = require('../utils/ticket-access');
+const { requireTicketeraAccess } = require('../middlewares/ticketera-access');
 const router = express.Router();
-const TOOL_NAME = 'Ticketera_ABONO_DEGRA';
 const ALLOWED_STATUSES = new Set([
   'pendiente',
   'en_curso',
@@ -43,26 +43,7 @@ const REQUIRED_FIELDS = [
   'detalle_observacion'
 ];
 
-async function requireDegraTool(req, res, next) {
-  const email = typeof req.user?.email === 'string' ? req.user.email.trim() : '';
-  if (!email) return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
-
-  try {
-    const { data, error } = await supabase.rpc('obtener_herramientas_usuario', { p_mail: email });
-    if (error) throw error;
-    if (!Array.isArray(data)) {
-      console.error('obtener_herramientas_usuario devolvió una respuesta inválida al autorizar Degra.');
-      return res.status(502).json({ error: 'No se pudieron verificar los permisos de Ticketera Degra.' });
-    }
-    if (!data.some((tool) => tool && tool.nombre === TOOL_NAME)) {
-      return res.status(403).json({ error: 'No tienes permisos para acceder a la Ticketera Degra.' });
-    }
-    return next();
-  } catch (error) {
-    console.error('Error al verificar el acceso a Ticketera Degra:', error);
-    return res.status(500).json({ error: 'No se pudieron verificar los permisos de Ticketera Degra.' });
-  }
-}
+const requireDegraTool = requireTicketeraAccess('DEGRA');
 
 function normalizeTicket(ticket) {
   const normalized = {};

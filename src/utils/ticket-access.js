@@ -1,4 +1,4 @@
-const ALLOWED_RANGES = new Set([0, 1, 2, 3, 4, 5, 6]);
+const ALLOWED_RANGES = new Set([0, 1, 2, 3, 4, 5]);
 
 function roleCode(value) {
   if (Array.isArray(value)) return roleCode(value[0]);

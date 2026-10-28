@@ -94,6 +94,8 @@ app.use('/auth/acceso-especial', authRoutes);
 
 // Middleware de validación JWT - solo para rutas protegidas
 app.use('/api', jwtValidationMiddleware);
+const { requireTicketeraAccess, sendTicketeraAccess } = require('./src/middlewares/ticketera-access');
+app.get('/api/ticketera/acceso', requireTicketeraAccess(), sendTicketeraAccess);
 app.use('/auth/validar-acceso', jwtValidationMiddleware);
 app.use('/auth/recargar-storage', jwtValidationMiddleware);
 

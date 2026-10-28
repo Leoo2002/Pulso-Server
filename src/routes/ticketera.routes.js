@@ -3,6 +3,13 @@ const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
 const { hasBackOfficeAccess } = require('../utils/ticket-access');
+const { requireTicketeraAccess, hasTicketeraAccess, normalizeTicketera, requireTicketeraCase } = require('../middlewares/ticketera-access');
+
+router.use(['/crearTicketeraTicket', '/crearIT', '/actualizarEstadoTicketera', '/lideresTck'],
+  requireTicketeraAccess('ONBOARDING'));
+router.use(['/crearTicketeraTicketVentas', '/obtenerTicketsVentas', '/actualizarEstadoTicketeraVentas'],
+  requireTicketeraAccess('VENTAS'));
+router.use(['/subirImagenesTicketera', '/lideresTicketera'], requireTicketeraAccess());
 
 const multer = require('multer');
 const path = require('path');
@@ -409,7 +416,7 @@ router.post('/crearIT', async (req, res) => {
   }
 });
 
-router.patch('/actualizarEstadoTicketera', async (req, res) => {
+router.patch('/actualizarEstadoTicketera', requireTicketeraCase('ONBOARDING'), async (req, res) => {
   const allowAnyProfileForTesting = process.env.TICKETERA_ALLOW_ANY_PROFILE === 'true';
   if (!allowAnyProfileForTesting && !hasBackOfficeAccess(req.user)) {
     return res.status(403).json({
@@ -456,7 +463,7 @@ router.patch('/actualizarEstadoTicketera', async (req, res) => {
   }
 });
 
-router.patch('/actualizarEstadoTicketeraVentas', async (req, res) => {
+router.patch('/actualizarEstadoTicketeraVentas', requireTicketeraCase('VENTAS'), async (req, res) => {
   const allowAnyProfileForTesting = process.env.TICKETERA_ALLOW_ANY_PROFILE === 'true';
   if (!allowAnyProfileForTesting && !hasBackOfficeAccess(req.user)) {
     return res.status(403).json({
@@ -526,6 +533,9 @@ router.get('/lideresTicketera', async (req, res) => {
     return res.status(400).json({
       error: 'Indicá una ticketera válida: VENTAS, ONBOARDING o ABONO/DEGRA.'
     });
+  }
+  if (!hasTicketeraAccess(req, ticketera)) {
+    return res.status(403).json({ error: 'No tienes permisos para acceder a los lideres de esta ticketera.' });
   }
 
   try {
@@ -620,22 +630,8 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
       });
     }
 
-    if (String(caso.tipo_ticketera).toUpperCase() === 'DEGRA') {
-      const email = typeof req.user?.email === 'string' ? req.user.email.trim() : '';
-      if (!email) {
-        return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
-      }
-      const { data: tools, error: toolsError } = await supabase.rpc('obtener_herramientas_usuario', {
-        p_mail: email
-      });
-      if (toolsError) throw toolsError;
-      if (!Array.isArray(tools)) {
-        console.error('obtener_herramientas_usuario devolvió una respuesta inválida al autorizar la carga de imágenes Degra.');
-        return res.status(502).json({ error: 'No se pudieron verificar los permisos de Ticketera Degra.' });
-      }
-      if (!tools.some((tool) => tool && tool.nombre === 'Ticketera_ABONO_DEGRA')) {
-        return res.status(403).json({ error: 'No tienes permisos para adjuntar imágenes a tickets de Degra.' });
-      }
+    if (!hasTicketeraAccess(req, normalizeTicketera(caso.tipo_ticketera))) {
+      return res.status(403).json({ error: 'No tienes permisos para adjuntar imagenes a esta ticketera.' });
     }
 
     if (String(caso.tipo_reg).toUpperCase() === 'ITRACKER') {
