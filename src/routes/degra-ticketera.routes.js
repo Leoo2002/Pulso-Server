@@ -1,17 +1,17 @@
 const express = require('express');
 const { supabase } = require('../config/database');
-const { hasBackOfficeAccess } = require('../utils/ticket-access');
-const { requireTicketeraAccess } = require('../middlewares/ticketera-access');
+const {
+  hasBackOfficeAccess, authorizeTicketSearch, defaultTicketDates, ticketPermissions, ticketMatchesSearch
+} = require('../utils/ticket-access');
+const { requireTicketeraAccess, normalizeTicketera } = require('../middlewares/ticketera-access');
 const { createTicketeraCase } = require('../services/ticketera-create.service');
 const router = express.Router();
 const ALLOWED_STATUSES = new Set([
-  'pendiente',
-  'en_curso',
-  'resuelto',
-  'cancelado',
-  'mal_cargado',
-  'cancelado_duplicado',
-  'cancelado_no_corresponde'
+  'En gestión',
+  'Reportado',
+  'Resuelto',
+  'Cancelado Duplicado',
+  'Cancelado No Corresponde'
 ]);
 const MAX_LENGTHS = {
   canal: 120,
@@ -123,13 +123,16 @@ router.get('/obtenerTicketsDegra', requireDegraTool, async (req, res) => {
   if (casoId !== null && (!Number.isSafeInteger(casoId) || casoId <= 0)) {
     return res.status(400).json({ error: 'El caso_id debe ser un ID numérico válido.' });
   }
+  if (!authorizeTicketSearch(req, res, casoId === null ? search : String(casoId), scope)) return;
 
   try {
+    const effectiveSearch = casoId === null ? search : String(casoId);
+    const dates = defaultTicketDates(effectiveSearch, scope);
     const { data, error } = await supabase.rpc('obtener_tickets', {
       p_servicio: 'DEGRA',
-      p_busqueda: search || 'All',
-      p_fecha_desde: null,
-      p_fecha_hasta: null,
+      p_busqueda: effectiveSearch || 'All',
+      p_fecha_desde: dates.from,
+      p_fecha_hasta: dates.to,
       p_lider: null
     });
     if (error) {
@@ -144,8 +147,15 @@ router.get('/obtenerTicketsDegra', requireDegraTool, async (req, res) => {
       console.error('obtener_tickets_degra devolvió un ticket con formato inválido.');
       return res.status(502).json({ error: 'La respuesta contiene tickets de Degra con formato inválido.' });
     }
+    if (data.some((ticket) => normalizeTicketera(ticket.tipo_ticketera) !== 'DEGRA')) {
+      console.error('obtener_tickets devolvio casos fuera de Degra.');
+      return res.status(502).json({ error: 'La respuesta contiene casos fuera de Degra.' });
+    }
 
     let tickets = data;
+    if (scope !== 'mine' && !ticketPermissions(req.user).list) {
+      tickets = tickets.filter((ticket) => ticketMatchesSearch(ticket, effectiveSearch));
+    }
     if (scope === 'mine') {
       const email = req.user.email.trim().toLowerCase();
       tickets = tickets.filter((ticket) => String(ticket.email || '').trim().toLowerCase() === email);
@@ -184,8 +194,7 @@ router.get('/obtenerTicketsDegra', requireDegraTool, async (req, res) => {
 });
 
 router.patch('/actualizarEstadoTicketeraDegra', requireDegraTool, async (req, res) => {
-  const allowAnyProfileForTesting = process.env.TICKETERA_ALLOW_ANY_PROFILE === 'true';
-  if (!allowAnyProfileForTesting && !hasBackOfficeAccess(req.user)) {
+  if (!hasBackOfficeAccess(req.user)) {
     return res.status(403).json({
       error: 'Solo los perfiles de Back Office o Desarrollo pueden actualizar tickets de Degra.'
     });

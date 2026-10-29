@@ -1,11 +1,46 @@
 # Server
 
+## Datos de nomina en el JWT
+
+El login con Google consulta `obtener_datos_usuario_nomina` con
+`{ p_email: email }` del token Google verificado. Acepta el objeto
+`{ datos, origen }` o una lista con una unica fila de ese formato.
+Los campos de `datos` se incorporan a la raiz del JWT: `id`, `dni`, `mail`,
+`lider`, `nombre`, `usuario`, `herramientas`, `rango`, `segmento` y `rol`
+(si viene informado). `origen` se conserva en la raiz.
+
+Nomina tiene prioridad: solo si `rol` o `rango` son nulos o faltan se consulta
+`getrol` o `getrango`, respectivamente. Si falta `segmento` se mantiene
+`SOPORTE-RRSS`; una lista vacia es valida y no activa ese valor anterior.
+Sin registro (null, lista vacia o `datos: null`) se permite el login con
+el esquema anterior y `nomina: null`. Un fallo RPC devuelve 500 y un formato
+invalido 502, sin emitir cookie. No se ignoran errores de consulta.
+
+Se conservan los claims de identidad de Google; la expiracion del JWT sigue
+siendo de ocho horas. El login y `/auth/recargar-storage` devuelven el mismo
+payload firmado, incluidos los datos de nomina. `rol` es el titulo del header,
+no una fuente alternativa de autorizacion. Ticketera verifica por solicitud los
+rangos y herramientas del JWT, sin volver a consultar asignaciones por RPC.
+Las asignaciones permanecen vigentes hasta vencer la sesion (8 horas).
+El acceso especial requiere `U_SECRET` configurado y usa el perfil fijo de
+Desarrollo de Leonel Quiroga (`U936558`, rango 1, herramientas 10/11/12);
+ignora el rango enviado por el navegador. Sin secreto devuelve 503.
+
+Reiniciar el backend y volver a iniciar sesion para actualizar tokens existentes.
+No requiere migraciones si la RPC ya esta desplegada. El frontend admite tanto
+el segmento anterior (string) como la nueva lista de segmentos.
+
+```powershell
+node --test .\src\routes\auth.routes.test.js
+```
+
 ## Alcance de alertas operativas
 
 Las nuevas alertas se publican solo en la ticketera activa (`servicio`),
 validada contra los accesos del usuario autenticado. `servicios` es opcional:
 si se envia debe contener exactamente esa ticketera, incluso para administradores.
-Se conserva el permiso existente de publicacion (rangos 1 y 5).
+Publicacion y eliminacion admiten rangos 1 a 5, incluidos Lider, Jefatura y
+Gerencia; siempre dentro de las herramientas asignadas en el JWT.
 
 La eliminacion admite rangos 1 a 5, nunca agentes (0) ni perfiles invalidos.
 Antes de ejecutar la RPC de borrado por ID, el servidor consulta las alertas
@@ -16,7 +51,7 @@ No requiere migraciones; desplegar backend y frontend juntos.
 
 ## Optimizacion de imagenes antes de Supabase Storage
 
-Las nuevas cargas de alertas operativas, `/subirImagenesTicketera` y `/tickets`
+Las nuevas cargas de alertas operativas, `/crearTicketera` y `/tickets`
 usan el mismo procesador `src/utils/optimize-image.js`, basado en `sharp`.
 No requiere migraciones ni cambios de buckets.
 
@@ -83,28 +118,75 @@ node --test .\src\config\cors.test.js
 
 ## Acceso a Ticketera
 
-`src/middlewares/ticketera-access.js` resuelve permisos a partir del correo y
-rango del JWT verificado. La RPC `obtener_herramientas_usuario` obtiene las
-asignaciones de segmentos/herramientas; no se confia en mail, rango ni segmento
-enviados en el body, query o sessionStorage.
+`src/middlewares/ticketera-access.js` resuelve acceso a partir de las
+`herramientas` y el `rango` del JWT verificado, emitido con datos de
+`obtener_datos_usuario_nomina`. No consulta `obtener_herramientas_usuario` para
+autorizar ni confia en mail, rango, segmentos o herramientas del body, query
+o sessionStorage. No hay excepcion de acceso por rango: incluso Desarrollo
+requiere las herramientas en su JWT.
 
-| Perfil | Acceso |
-|---|---|
-| Desarrollo 1, Jefatura 3, Gerencia 4 | Todas las ticketeras |
-| Agente 0, Lider 2, BO 5 | Solo herramientas asignadas |
-| Rango 6 / perfil invalido | Denegado |
+| Perfil | Crear/buscar/detalle | Listar / metricas / exportar | Editar estados/comentarios | Crear/borrar alertas | Vista previa |
+|---|---|---|---|---|---|
+| Agente 0 | Si | No | No | No | No |
+| Desarrollo 1 | Si | Si | Si | Si | Si |
+| Lider 2, Jefatura 3, Gerencia 4 | Si | Si | No | Si | No |
+| BO 5 | Si | Si | Si | Si | No |
 
-Mapeo: 10 ONBOARDING, 11 VENTAS, 12 ABONO/DEGRA; tambien se reconocen nombres
+Todas las acciones de la tabla exigen la herramienta de la ticketera concreta.
+Otros rangos y perfiles invalidos se rechazan.
+Mapeo: 10 ONBOARDING, 11 VENTAS, 12 ABONO/DEGRA; se comprueban ID y nombre
 canonicos `TICKETERA_ONBOARDING`, `TICKETERA_VENTAS`, `TICKETERA_ABONO_DEGRA`.
+El nombre ignora mayusculas y espacios exteriores.
 `GET /api/ticketera/acceso` devuelve las herramientas efectivas de la sesion.
-Sin asignacion devuelve 403; sin identidad 401; fallo RPC 500; formato invalido
-502. No se cachean permisos entre solicitudes.
+`GET /api/ticketera/permisos` devuelve `{ herramientas, permisos, perfil }`;
+el frontend usa sus capacidades para mostrar controles. `perfil` contiene
+email, rango, rol, usuario y segmentos del JWT. Sin asignacion, herramientas
+ausentes/malformadas o rango invalido devuelve 403; sin identidad, 401.
+
+El alcance de segmento acordado es la ticketera (ONBOARDING/VENTAS/DEGRA),
+no la subdivison HOGAR/MOVIL/WSP dentro de ella. Cada RPC de listado recibe
+`p_servicio` autorizado; una respuesta de otra ticketera se rechaza antes de
+firmar adjuntos. Los casos a modificar se verifican contra su ticketera real.
+No se puede ampliar el alcance cambiando el servicio en el navegador.
+
+Un agente solo puede consultar `scope=mine` (correo del JWT) o buscar texto
+concreto. `All`, texto vacio, comodines SQL `%`/`_` y filtros generales solos
+no habilitan el listado (403), tanto en el endpoint unificado como en los
+alternativos y legacy. Las coincidencias de agentes se verifican tambien
+contra valores reales: las claves del JSON serializado de la RPC (por ejemplo
+`email`) y los metadatos de imagenes no cuentan como coincidencia.
+La busqueda por ID permite consultar detalle/adjuntos,
+sin habilitar edicion. Para los demas rangos, el listado sin busqueda y sin
+fechas explicitas se limita al ultimo mes calendario movil; buscar, Mis casos
+y los filtros de fechas explicitos conservan su alcance. Los contadores del
+inicio siguen siendo globales dentro de ONBOARDING, tambien para agentes.
 
 El control cubre validar-acceso de la vista, listado/creacion por ticketera,
 rutas legacy `/tickets`, resumen, analitica/detalle/exportacion ONBOARDING,
 lideres, alertas operativas y carga de imagenes segun la ticketera real del caso.
 Las actualizaciones ONBOARDING/VENTAS comprueban tambien el tipo del caso para
 impedir usar la ruta de otra ticketera. No cambia permisos de otras herramientas.
+
+`TICKETERA_ALLOW_ANY_PROFILE` ya no concede permisos. Solo Desarrollo puede
+usar la vista previa de otro perfil: modifica datos visuales, nunca identidad,
+herramientas ni acciones efectivas. Consultar perfiles ajenos por las rutas
+de nomina/herramientas tambien exige rango 1.
+
+### Imagenes inmutables despues de crear
+
+`POST /api/crearTicketera` recibe JSON `{ servicio, ticket }` sin archivos, o
+multipart con `servicio`, `ticket` (JSON) e `imagenes` (hasta 3). Comprueba y
+optimiza todos los archivos antes de crear el caso; los guarda en esa misma
+solicitud. La ruta legacy `/tickets` tambien recibe sus archivos al crear.
+`POST /api/subirImagenesTicketera` devuelve 403 para todos, incluso Desarrollo
+y BO: no se pueden agregar ni modificar imagenes de casos existentes.
+Las rutas antiguas de creacion JSON siguen disponibles, sin carga posterior.
+
+Si falla Storage o la persistencia de metadatos despues de crear el caso,
+se limpian los adjuntos de esa solicitud y se devuelve 500 con `ticketCreado`,
+`caso_id` e `id_tck`. El caso puede persistir sin adjuntos; no se garantiza una
+transaccion atomica entre SQL y Storage. El frontend muestra el error y bloquea
+el reenvio del formulario para evitar duplicados, sin ofrecer carga posterior.
 
 ### Despliegue
 
@@ -117,19 +199,21 @@ impedir usar la ruta de otra ticketera. No cambia permisos de otras herramientas
 3. Desplegar backend y luego frontend. No se aplican migraciones automaticamente
    al iniciar Express. Sin la nueva migracion, analitica devuelve error y no
    recurre a las RPC antiguas que mezclan ticketeras.
-4. Verificar cuentas sin asignacion, con una o varias, y excepciones 1/3/4.
+4. Verificar cuentas sin asignacion, con una o varias, y la matriz por rango.
+   Emitir nuevos JWT con herramientas; los anteriores sin asignaciones no
+   obtienen acceso. Este cambio no requiere nuevas migraciones.
 
-La RPC historica `/tickets/statistics` no admite alcance y se permite solo a
-cuentas con acceso a las tres ticketeras. Para usuarios ONBOARDING se utiliza
-`/tickets/analytics`, que es el informe de la interfaz actual.
+La ruta historica `/tickets/statistics` ya no ejecuta su RPC global sin alcance:
+devuelve 410 para perfiles antes habilitados y mantiene 403 para los demas.
+Usar `/tickets/analytics`, limitado a ONBOARDING, con sus rutas de detalle/exportacion.
 
 Alcance pendiente: aislamiento de filas entre subsegmentos de una misma
-ticketera, permisos de mutacion/inmutabilidad, flag de pruebas de estados y
+ticketera y
 los riesgos de grants/RPC/Storage descritos en el reporte. Estos controles
 de Express no sustituyen el endurecimiento del acceso directo a Supabase.
 
 ### Pruebas locales (Supabase simulado)
 
 ```powershell
-node --test .\src\middlewares\ticketera-access.test.js .\src\routes\ticketera-analytics.routes.test.js .\src\routes\alertas-operativas.routes.test.js
+node --test .\src\utils\ticket-access.test.js .\src\routes\auth.routes.test.js .\src\middlewares\ticketera-access.test.js .\src\routes\ticketera-analytics.routes.test.js .\src\routes\alertas-operativas.routes.test.js .\src\routes\image-uploads.routes.test.js
 ```

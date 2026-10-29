@@ -10,12 +10,14 @@ let inserts;
 let removed;
 let deleted;
 let failInsert;
+let failCleanup;
 let caseType;
 let caseReg;
 const client = {
-  rpc: async () => ({ data: [
-    { nombre: 'TICKETERA_ONBOARDING' }, { nombre: 'TICKETERA_VENTAS' }
-  ], error: null }),
+  rpc: async (name) => {
+    assert.equal(name, 'crear_ticket_ticketera');
+    return { data: { caso_id: 1, id_tck: 'TEST-1' }, error: null };
+  },
   schema() { return this; },
   from(table) {
     let record;
@@ -36,7 +38,10 @@ const client = {
       },
       single: async () => ({ data: record, error: failInsert ? new Error('Insert failed') : null }),
       delete() { return this; },
-      in(_column, paths) { deleted.push(...paths); return Promise.resolve({ error: null }); }
+      in(_column, paths) {
+        deleted.push(...paths);
+        return failCleanup ? Promise.reject(new Error('Cleanup unavailable')) : Promise.resolve({ error: null });
+      }
     };
   },
   storage: {
@@ -69,7 +74,10 @@ before(async () => {
   }).png().toBuffer();
   const app = express();
   app.use((req, _res, next) => {
-    req.user = { rango: 5, email: 'test@example.com', name: 'Usuario Test' };
+    req.user = { rango: 5, email: 'test@example.com', name: 'Usuario Test', herramientas: [
+      { id_herramienta: 10, nombre: 'TICKETERA_ONBOARDING' },
+      { id_herramienta: 11, nombre: 'TICKETERA_VENTAS' }
+    ] };
     next();
   });
   app.use(ticketera, tickets);
@@ -85,6 +93,7 @@ beforeEach(() => {
   removed = [];
   deleted = [];
   failInsert = false;
+  failCleanup = false;
   caseType = 3;
   caseReg = 'TICKET';
 });
@@ -95,7 +104,14 @@ async function post(route, images = [image]) {
     type: 'ticket', userCode: 'U123456', leaderDni: '12345678',
     incidentDate: '2026-10-28', channel: 'digital',
     customerType: 'movil', customerDni: '12345678', motive: 'delivery'
-  } : { caso_id: '1' };
+  } : {
+    servicio: caseType === 2 ? 'VENTAS' : caseReg === 'ITRACKER' ? 'IT' : 'ONBOARDING',
+    ticket: JSON.stringify(caseType === 2 ? {
+      usuario_teco: 'U123456', nombre: 'Agente', lider: 'Lider', canal: 'Digital',
+      tipo_venta: 'Hogar', motivo: 'App', submotivo: 'Test', numero_gestion: '12345',
+      dni_cliente: '12345678', telefono_contacto: '1122334455', comentario_carga: 'Test'
+    } : {})
+  };
   for (const [key, value] of Object.entries(fields)) form.append(key, value);
   for (const buffer of images) {
     form.append(route === '/tickets' ? 'images' : 'imagenes',
@@ -104,7 +120,7 @@ async function post(route, images = [image]) {
   return fetch(`${base}${route}`, { method: 'POST', body: form });
 }
 
-for (const route of ['/subirImagenesTicketera', '/tickets']) {
+for (const route of ['/crearTicketera', '/tickets']) {
   test(`${route}: uploads one optimized file and records its actual MIME type and size`, async () => {
     const response = await post(route);
     assert.equal(response.status, 201, await response.text());
@@ -145,7 +161,12 @@ for (const route of ['/subirImagenesTicketera', '/tickets']) {
     assert.equal(response.status, 500);
     assert.equal(uploads.length, 1);
     assert.deepEqual(removed, [uploads[0].path]);
-    if (route === '/subirImagenesTicketera') assert.deepEqual(deleted, removed);
+    if (route === '/crearTicketera') {
+      assert.deepEqual(deleted, removed);
+      const body = await response.json();
+      assert.equal(body.ticketCreado, true);
+      assert.equal(body.caso_id, 1);
+    }
   });
 }
 
@@ -153,8 +174,26 @@ test('Ventas and ITracker PNG inputs remain supported even when stored as WebP',
   for (const [tipo, registro] of [[2, 'TICKET'], [3, 'ITRACKER']]) {
     caseType = tipo;
     caseReg = registro;
-    const response = await post('/subirImagenesTicketera');
+    const response = await post('/crearTicketera');
     assert.equal(response.status, 201, await response.text());
     assert.equal(uploads.at(-1).options.contentType, 'image/webp');
   }
+});
+
+test('no profile can add or modify images after creation', async () => {
+  const response = await post('/subirImagenesTicketera');
+  assert.equal(response.status, 403);
+  assert.equal(uploads.length, 0);
+  assert.equal(inserts.length, 0);
+});
+
+test('failed cleanup still returns the created case and attempts Storage cleanup', async () => {
+  failInsert = true;
+  failCleanup = true;
+  const response = await post('/crearTicketera');
+  assert.equal(response.status, 500);
+  const body = await response.json();
+  assert.equal(body.ticketCreado, true);
+  assert.equal(body.caso_id, 1);
+  assert.deepEqual(removed, [uploads[0].path]);
 });

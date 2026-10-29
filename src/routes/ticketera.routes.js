@@ -2,7 +2,9 @@
 const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
-const { hasBackOfficeAccess } = require('../utils/ticket-access');
+const {
+  hasBackOfficeAccess, authorizeTicketSearch, defaultTicketDates, ticketPermissions, ticketMatchesSearch
+} = require('../utils/ticket-access');
 const {
   requireTicketeraAccess,
   hasTicketeraAccess,
@@ -26,7 +28,9 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 5 * 1024 * 1024, // 5 MB por imagen
-    files: 3
+    files: 3,
+    fields: 2,
+    fieldSize: 10 * 1024
   },
   fileFilter: (req, file, cb) => {
     const permitidos = [
@@ -46,20 +50,18 @@ const upload = multer({
 });
 const MAX_IT_IMAGES_SIZE = 5 * 1024 * 1024;
 const ESTADOS_TICKETERA = new Set([
-  'pendiente',
-  'en_curso',
-  'resuelto',
-  'cancelado',
-  'mal_cargado',
-  'cancelado_duplicado',
-  'cancelado_no_corresponde'
+  'En gestión',
+  'Reportado',
+  'Resuelto',
+  'Cancelado Duplicado',
+  'Cancelado No Corresponde'
 ]);
 const ESTADOS_TICKETERA_VENTAS = new Set([
-  'reportado',
-  'cerrado ok',
-  'no corresponde',
-  'no corresponde duplicado',
-  'derivacion incorrecta'
+  'Reportado',
+  'Cerrado OK',
+  'No corresponde',
+  'No corresponde duplicado',
+  'Derivación incorrecta'
 ]);
 const LIDERES_TICKETERAS = new Set(['VENTAS', 'ONBOARDING', 'ABONO/DEGRA']);
 
@@ -125,7 +127,21 @@ function validateCreatePayload(service, ticket) {
   return '';
 }
 
-router.post('/crearTicketera', async (req, res) => {
+function receiveCreationImages(req, res, next) {
+  upload.array('imagenes', 3)(req, res, (error) => {
+    if (error) return res.status(400).json({ error: error.message || 'No se pudieron recibir las imagenes.' });
+    if (typeof req.body?.ticket === 'string') {
+      try {
+        req.body.ticket = JSON.parse(req.body.ticket);
+      } catch {
+        return res.status(400).json({ error: 'Los datos del ticket no contienen JSON valido.' });
+      }
+    }
+    return next();
+  });
+}
+
+router.post('/crearTicketera', receiveCreationImages, async (req, res) => {
   const service = typeof req.body?.servicio === 'string' ? req.body.servicio.trim().toUpperCase() : '';
   const serviceAliases = { IT: 'IT', ITRACKER: 'IT', ONBO: 'ONBOARDING', 'ABONO/DEGRA': 'DEGRA' };
   const normalizedService = serviceAliases[service] || service;
@@ -150,9 +166,27 @@ router.post('/crearTicketera', async (req, res) => {
   if (validationError) return res.status(400).json({ error: validationError });
 
   try {
+    const files = req.files || [];
+    if (['IT', 'VENTAS'].includes(normalizedService)
+      && files.some((file) => !['image/jpeg', 'image/png'].includes(file.mimetype))) {
+      return res.status(400).json({ error: 'ITracker y Ventas solo admiten imagenes JPG o PNG.' });
+    }
+    if (normalizedService === 'IT'
+      && files.reduce((total, file) => total + file.size, 0) > MAX_IT_IMAGES_SIZE) {
+      return res.status(400).json({ error: 'El total de imagenes de ITracker no puede superar 5 MB.' });
+    }
+    req.initialImages = [];
+    for (const file of files) req.initialImages.push(await optimizeImage(file));
     const result = await createTicketeraCase(normalizedService, ticket, creatorEmail);
+    if (files.length) {
+      req.createdTicket = result;
+      req.createdTicketera = accessService;
+      req.body.caso_id = result.caso_id;
+      return saveInitialImages(req, res);
+    }
     return res.status(201).json(result);
   } catch (error) {
+    if (error instanceof ImageValidationError) return res.status(400).json({ error: error.message });
     console.error(`Error al crear ticket de ${normalizedService}:`, error);
     const statusCode = error.code === 'P0001' || error.code === '22007' ? 400 : 500;
     return res.status(statusCode).json({
@@ -161,19 +195,6 @@ router.post('/crearTicketera', async (req, res) => {
     });
   }
 });
-
-const recibirImagenes = (req, res, next) => {
-  upload.array('imagenes', 3)(req, res, (error) => {
-    if (error) {
-      return res.status(400).json({
-        error: error.message || 'No se pudieron recibir las imágenes.'
-      });
-    }
-
-    next();
-  });
-};
-
 
 // Crear un ticket de la ticketera
 router.post('/crearTicketeraTicket', async (req, res) => {
@@ -284,13 +305,15 @@ router.get('/obtenerTicketsVentas', async (req, res) => {
   if (scope === 'mine' && (typeof req.user?.email !== 'string' || !req.user.email.trim())) {
     return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
   }
+  if (!authorizeTicketSearch(req, res, search, scope)) return;
 
   try {
+    const dates = defaultTicketDates(search, scope);
     const { data, error } = await supabase.rpc('obtener_tickets', {
       p_servicio: 'VENTAS',
       p_busqueda: search || 'All',
-      p_fecha_desde: null,
-      p_fecha_hasta: null,
+      p_fecha_desde: dates.from,
+      p_fecha_hasta: dates.to,
       p_lider: null
     });
     if (error) {
@@ -301,14 +324,21 @@ router.get('/obtenerTicketsVentas', async (req, res) => {
       console.error('La función obtener_tickets no devolvió una lista para Ventas.');
       return res.status(502).json({ error: 'La respuesta de tickets de Ventas no tiene el formato esperado.' });
     }
+    if (data.some((ticket) => !ticket || normalizeTicketera(ticket.tipo_ticketera) !== 'VENTAS')) {
+      console.error('obtener_tickets devolvio casos fuera de Ventas.');
+      return res.status(502).json({ error: 'La respuesta contiene casos fuera de Ventas.' });
+    }
 
     const requesterEmail = scope === 'mine' ? req.user.email.trim().toLowerCase() : '';
-    const scopedTickets = scope === 'mine'
+    let scopedTickets = scope === 'mine'
       ? data.filter((ticket) =>
         ticket && typeof ticket === 'object' && !Array.isArray(ticket)
         && String(ticket.email || '').trim().toLowerCase() === requesterEmail
       )
       : data;
+    if (scope !== 'mine' && !ticketPermissions(req.user).list) {
+      scopedTickets = scopedTickets.filter((ticket) => ticketMatchesSearch(ticket, search));
+    }
 
     const tickets = await Promise.all(scopedTickets.map(async (ticket, index) => {
       if (!ticket || typeof ticket !== 'object' || Array.isArray(ticket)) {
@@ -369,10 +399,9 @@ router.post('/crearIT', async (req, res) => {
 });
 
 router.patch('/actualizarEstadoTicketera', requireTicketeraCase('ONBOARDING'), async (req, res) => {
-  const allowAnyProfileForTesting = process.env.TICKETERA_ALLOW_ANY_PROFILE === 'true';
-  if (!allowAnyProfileForTesting && !hasBackOfficeAccess(req.user)) {
+  if (!hasBackOfficeAccess(req.user)) {
     return res.status(403).json({
-      error: 'Solo los perfiles de Back Office o Desarrollo pueden actualizar casos. Para pruebas locales se puede habilitar TICKETERA_ALLOW_ANY_PROFILE=true.'
+      error: 'Solo los perfiles de Back Office o Desarrollo pueden actualizar casos.'
     });
   }
 
@@ -417,8 +446,7 @@ router.patch('/actualizarEstadoTicketera', requireTicketeraCase('ONBOARDING'), a
 });
 
 router.patch('/actualizarEstadoTicketeraVentas', requireTicketeraCase('VENTAS'), async (req, res) => {
-  const allowAnyProfileForTesting = process.env.TICKETERA_ALLOW_ANY_PROFILE === 'true';
-  if (!allowAnyProfileForTesting && !hasBackOfficeAccess(req.user)) {
+  if (!hasBackOfficeAccess(req.user)) {
     return res.status(403).json({
       error: 'Solo los perfiles de Back Office o Desarrollo pueden actualizar tickets de Ventas.'
     });
@@ -578,21 +606,13 @@ router.get('/lideresTck', async (req, res) => {
 });
 
 
-router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
+router.post('/subirImagenesTicketera', (_req, res) => {
+  return res.status(403).json({ error: 'Las imagenes solo se pueden adjuntar durante la creacion del ticket.' });
+});
+
+async function saveInitialImages(req, res) {
   const casoId = Number(req.body?.caso_id);
   const archivos = req.files || [];
-
-  if (!Number.isSafeInteger(casoId) || casoId <= 0) {
-    return res.status(400).json({
-      error: 'El caso_id debe ser un ID numérico válido.'
-    });
-  }
-
-  if (archivos.length === 0) {
-    return res.status(400).json({
-      error: 'Tenés que adjuntar al menos una imagen.'
-    });
-  }
 
   const bucket = 'ticketera-imagenes';
   const rutasSubidas = [];
@@ -608,34 +628,11 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
 
     if (errorCaso) throw errorCaso;
 
-    if (!caso) {
-      return res.status(404).json({
-        error: 'No existe un ticket con ese caso_id.'
-      });
-    }
+    if (!caso) throw new Error('No se pudo encontrar el caso recien creado para guardar sus imagenes.');
 
-    if (!hasTicketeraAccess(req, normalizeTicketera(caso.tipo_ticketera))) {
-      return res.status(403).json({ error: 'No tienes permisos para adjuntar imagenes a esta ticketera.' });
-    }
-
-    if (String(caso.tipo_reg).toUpperCase() === 'ITRACKER') {
-      if (archivos.some((archivo) => !['image/jpeg', 'image/png'].includes(archivo.mimetype))) {
-        return res.status(400).json({
-          error: 'ITracker solo admite imágenes JPG o PNG.'
-        });
-      }
-      if (archivos.reduce((total, archivo) => total + archivo.size, 0) > MAX_IT_IMAGES_SIZE) {
-        return res.status(400).json({
-          error: 'El tamaño total de las imágenes de ITracker no puede superar 5 MB.'
-        });
-      }
-    }
-
-    if (Number(caso.tipo_ticketera) === 2
-      && archivos.some((archivo) => !['image/jpeg', 'image/png'].includes(archivo.mimetype))) {
-      return res.status(400).json({
-        error: 'La ticketera Ventas solo admite imágenes JPG o PNG.'
-      });
+    if (normalizeTicketera(caso.tipo_ticketera) !== req.createdTicketera
+      || !hasTicketeraAccess(req, caso.tipo_ticketera)) {
+      throw new Error('El caso creado no pertenece a una ticketera autorizada.');
     }
 
     // 2. Consultar las posiciones que ya están ocupadas.
@@ -646,32 +643,18 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
       .eq('caso_id', casoId);
 
     if (errorExistentes) throw errorExistentes;
-
-    const ocupados = new Set(
-      (existentes || []).map((imagen) => Number(imagen.orden))
-    );
-
-    const posicionesLibres = [1, 2, 3].filter(
-      (orden) => !ocupados.has(orden)
-    );
-
-    if (archivos.length > posicionesLibres.length) {
-      return res.status(400).json({
-        error: `Este ticket admite 3 imágenes como máximo. Ya tiene ${ocupados.size}.`
-      });
+    if (!Array.isArray(existentes) || existentes.length) {
+      throw new Error('El caso ya tiene imagenes o no se pudo comprobar su carga inicial.');
     }
 
     const imagenesRegistradas = [];
-    const imagenesOptimizadas = [];
-    for (const archivo of archivos) {
-      imagenesOptimizadas.push(await optimizeImage(archivo));
-    }
+    const imagenesOptimizadas = req.initialImages;
 
     // 3. Subir cada imagen y registrar sus metadatos.
     for (let i = 0; i < archivos.length; i++) {
       const archivo = archivos[i];
       const imagen = imagenesOptimizadas[i];
-      const orden = posicionesLibres[i];
+      const orden = i + 1;
 
       const nombreArchivo = `${caso.id_tck}-${orden}${imagen.extension}`;
       const ruta = `tickets/${caso.id_tck}/${nombreArchivo}`;
@@ -708,6 +691,7 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
     }
 
     return res.status(201).json({
+      ...req.createdTicket,
       ok: true,
       caso_id: caso.id,
       id_tck: caso.id_tck,
@@ -715,45 +699,41 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
     });
 
   } catch (error) {
-    if (error instanceof ImageValidationError) {
-      return res.status(400).json({ error: error.message });
-    }
     console.error('Error al subir imágenes:', error);
 
     // Si falla una parte, intentar limpiar los archivos y registros
     // creados por esta solicitud.
     if (rutasSubidas.length > 0) {
-      const { error: errorBorradoRegistros } = await supabase
-        .schema('tickets_soporte')
-        .from('ticketera_imagenes')
-        .delete()
-        .in('ruta_archivo', rutasSubidas);
-
-      if (errorBorradoRegistros) {
-        console.error(
-          'Error al limpiar metadatos de imágenes:',
-          errorBorradoRegistros
-        );
+      try {
+        const { error: errorBorradoRegistros } = await supabase
+          .schema('tickets_soporte')
+          .from('ticketera_imagenes')
+          .delete()
+          .in('ruta_archivo', rutasSubidas);
+        if (errorBorradoRegistros) throw errorBorradoRegistros;
+      } catch (cleanupError) {
+        console.error('Error al limpiar metadatos de imagenes:', cleanupError);
       }
 
-      const { error: errorBorradoArchivos } = await supabase
-        .storage
-        .from(bucket)
-        .remove(rutasSubidas);
-
-      if (errorBorradoArchivos) {
-        console.error(
-          'Error al limpiar archivos de Storage:',
-          errorBorradoArchivos
-        );
+      try {
+        const { error: errorBorradoArchivos } = await supabase
+          .storage
+          .from(bucket)
+          .remove(rutasSubidas);
+        if (errorBorradoArchivos) throw errorBorradoArchivos;
+      } catch (cleanupError) {
+        console.error('Error al limpiar archivos de Storage:', cleanupError);
       }
     }
 
     return res.status(500).json({
-      error: 'No se pudieron guardar las imágenes.'
+      error: 'El ticket se creo, pero no se pudieron guardar las imagenes. No vuelvas a enviarlo para evitar duplicados.',
+      ticketCreado: true,
+      caso_id: req.createdTicket.caso_id,
+      id_tck: req.createdTicket.id_tck
     });
   }
-});
+}
 
 
 module.exports = router;

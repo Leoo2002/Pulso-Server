@@ -70,7 +70,12 @@ before(async () => {
   app.use((req, _res, next) => {
     req.user = {
       email: 'gestor@example.com',
-      rango: Number(req.headers['x-test-range'] ?? 5)
+      rango: Number(req.headers['x-test-range'] ?? 5),
+      herramientas: tools.map((tool) => ({
+        ...tool, id_herramienta: {
+          TICKETERA_ONBOARDING: 10, TICKETERA_VENTAS: 11, TICKETERA_ABONO_DEGRA: 12
+        }[tool.nombre]
+      }))
     };
     next();
   });
@@ -138,7 +143,7 @@ test('requires permission for the selected ticketera before accessing alerts', a
   tools = [{ nombre: 'TICKETERA_ABONO_DEGRA' }];
   calls = [];
   assert.equal((await get('VENTAS')).status, 403);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 0);
   assert.equal((await get('OTRO')).status, 400);
 });
 
@@ -186,6 +191,7 @@ test('creates a validated alert only for management profiles', async () => {
     ...rpcResult.data,
     imagen_url: `https://signed.example/${uploadedFiles[0].filePath}?expires=3600`
   });
+
   assert.equal(uploadedFiles.length, 1);
   assert.ok(uploadedFiles[0].size < image.length);
   assert.equal(uploadedFiles[0].options.contentType, 'image/webp');
@@ -211,7 +217,32 @@ test('creates a validated alert only for management profiles', async () => {
     tipo_severidad: 'Alta',
     comentario: 'Detalle'
   }, 0)).status, 403);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 0);
+});
+
+test('leaders, chiefs and managers can create alerts only in assigned ticketera', async () => {
+  tools = [{ nombre: 'TICKETERA_VENTAS' }];
+  rpcResult = { data: {
+    id: 9, titulo_aviso: 'Aviso', tipo_severidad: 'Alta', comentario: 'Detalle',
+    servicio: 'VENTAS', servicios: ['VENTAS'], imagen_url: null, fecha_creacion: '2026-10-29T12:00:00Z'
+  }, error: null };
+  for (const range of [1, 2, 3, 4, 5]) {
+    assert.equal((await post({
+      servicio: 'VENTAS', titulo_aviso: 'Aviso', tipo_severidad: 'Alta', comentario: 'Detalle'
+    }, range)).status, 201);
+    assert.equal((await post({
+      servicio: 'ONBOARDING', titulo_aviso: 'Aviso', tipo_severidad: 'Alta', comentario: 'Detalle'
+    }, range)).status, 403);
+  }
+});
+
+test('does not expose alerts returned outside the selected service', async () => {
+  tools = [{ nombre: 'TICKETERA_VENTAS' }];
+  rpcResult = { data: [{
+    id: 9, titulo_aviso: 'Aviso', tipo_severidad: 'Alta', comentario: 'Detalle',
+    servicio: 'ONBOARDING', imagen_url: null, fecha_creacion: '2026-10-29T12:00:00Z'
+  }], error: null };
+  assert.equal((await get('VENTAS')).status, 502);
 });
 
 test('rejects invalid alert input without calling the create RPC', async () => {

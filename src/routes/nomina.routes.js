@@ -3,8 +3,18 @@ const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
 const validateInput = require('../validators/input.validator');
+const { ticketPermissions } = require('../utils/ticket-access');
 
-router.post('/obtenerUsuariosNomina', async (req, res) => {
+function requireOwnProfileOrDeveloper(req, res, next) {
+  const mail = typeof req.body?.mail === 'string' ? req.body.mail.trim().toLowerCase() : '';
+  if (!ticketPermissions(req.user).previewProfile
+    && mail !== String(req.user?.email || '').trim().toLowerCase()) {
+    return res.status(403).json({ error: 'Solo Desarrollo puede consultar perfiles de prueba de otros usuarios.' });
+  }
+  return next();
+}
+
+router.post('/obtenerUsuariosNomina', requireOwnProfileOrDeveloper, async (req, res) => {
   const mail = typeof req.body?.mail === 'string' ? req.body.mail.trim() : '';
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail) || mail.length > 254) {
     return res.status(400).json({ error: 'Ingresá un mail válido.' });
@@ -46,7 +56,7 @@ router.post('/obtenerUsuariosNomina', async (req, res) => {
   }
 });
 
-router.post('/obtenerHerramientasUsuario', async (req, res) => {
+router.post('/obtenerHerramientasUsuario', requireOwnProfileOrDeveloper, async (req, res) => {
   const mail = typeof req.body?.mail === 'string' ? req.body.mail.trim() : '';
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail) || mail.length > 254) {
     return res.status(400).json({ error: 'Ingresá un mail válido.' });

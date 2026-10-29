@@ -2,8 +2,11 @@ const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
 const { supabase } = require('../config/database');
-const { canUseTicketing, hasBackOfficeAccess, roleCode } = require('../utils/ticket-access');
-const { requireTicketeraAccess, hasTicketeraAccess } = require('../middlewares/ticketera-access');
+const {
+  canUseTicketing, hasBackOfficeAccess, roleCode, ticketPermissions,
+  authorizeTicketSearch, defaultTicketDates, ticketMatchesSearch
+} = require('../utils/ticket-access');
+const { requireTicketeraAccess, hasTicketeraAccess, normalizeTicketera } = require('../middlewares/ticketera-access');
 const { optimizeImage, ImageValidationError } = require('../utils/optimize-image');
 
 const router = express.Router();
@@ -179,33 +182,15 @@ router.get('/tickets/summary', async (_req, res) => {
   }
 });
 
-router.get('/tickets/statistics', async (req, res) => {
+router.get('/tickets/statistics', (req, res) => {
+  if (!ticketPermissions(req.user).metrics) {
+    return res.status(403).json({ error: 'No tienes permisos para consultar las metricas.' });
+  }
   // La RPC historica agrega todas las ticketeras y no admite un alcance.
   if (!['ONBOARDING', 'VENTAS', 'DEGRA'].every((name) => hasTicketeraAccess(req, name))) {
     return res.status(403).json({ error: 'Las estadisticas globales requieren acceso a todas las ticketeras. Usa la analitica de ONBOARDING.' });
   }
-  try {
-    const { data, error } = await supabase.rpc('obtener_estadisticas_ticketera');
-    if (error) {
-      console.error('Error al obtener las estadísticas de Ticketera:', error);
-      return res.status(500).json({ error: 'No se pudieron cargar las estadísticas de Ticketera.' });
-    }
-    if (!data || typeof data !== 'object' || Array.isArray(data)) {
-      console.error('La función obtener_estadisticas_ticketera devolvió una respuesta inválida.');
-      return res.status(502).json({ error: 'La respuesta de estadísticas no tiene el formato esperado.' });
-    }
-
-    const requiredArrays = ['general', 'tickets', 'it', 'por_lider', 'por_canal', 'por_motivo'];
-    if (requiredArrays.some((key) => !Array.isArray(data[key]))) {
-      console.error('La función obtener_estadisticas_ticketera no devolvió todas las listas esperadas.');
-      return res.status(502).json({ error: 'La respuesta de estadísticas está incompleta.' });
-    }
-
-    return res.json(data);
-  } catch (error) {
-    console.error('Error inesperado al obtener las estadísticas de Ticketera:', error);
-    return res.status(500).json({ error: 'No se pudieron cargar las estadísticas de Ticketera.' });
-  }
+  return res.status(410).json({ error: 'Las estadisticas globales fueron retiradas. Usa la analitica de la ticketera.' });
 });
 
 router.get('/tickets', async (req, res) => {
@@ -213,9 +198,12 @@ router.get('/tickets', async (req, res) => {
   const type = req.query.type;
   const status = req.query.status;
   const userCode = req.query.userCode;
-  const dateFrom = req.query.dateFrom;
-  const dateTo = req.query.dateTo;
+  const scope = typeof req.query.scope === 'string' ? req.query.scope.trim().toLowerCase() : 'all';
   const search = typeof req.query.q === 'string' ? escapeSearch(req.query.q) : '';
+  if (!authorizeTicketSearch(req, res, search, scope)) return;
+  const dates = defaultTicketDates(search, scope, req.query.dateFrom, req.query.dateTo);
+  const dateFrom = dates.from;
+  const dateTo = dates.to;
 
   if (type && !ALLOWED_TYPES.has(type)) {
     return res.status(400).json({ error: 'El tipo de solicitud no es válido.' });
@@ -242,6 +230,7 @@ router.get('/tickets', async (req, res) => {
       .order('created_at', { ascending: false })
       .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
     if (type) query = query.eq('type', type);
+    if (scope === 'mine') query = query.eq('requester_email', req.user.email.trim().toLowerCase());
     if (status) query = query.eq('status', status);
     if (userCode) query = query.eq('user_code', userCode);
     if (dateFrom) query = query.gte('created_at', `${dateFrom}T00:00:00-03:00`);
@@ -580,6 +569,7 @@ router.get('/obtenerTickets', async (req, res) => {
   if (scope === 'mine' && !req.user?.email) {
     return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
   }
+  if (!authorizeTicketSearch(req, res, search, scope)) return;
   const requesterEmail = scope === 'mine'
     ? String(req.user.email).trim().toLowerCase()
     : '';
@@ -615,11 +605,12 @@ router.get('/obtenerTickets', async (req, res) => {
   }
 
   try {
+    const dates = defaultTicketDates(search, scope, dateFrom, dateTo);
     const { data, error } = await supabase.rpc('obtener_tickets', {
       p_servicio: ticketera,
       p_busqueda: search || 'All',
-      p_fecha_desde: dateFrom || null,
-      p_fecha_hasta: dateTo || null,
+      p_fecha_desde: dates.from,
+      p_fecha_hasta: dates.to,
       p_lider: leader || null
     });
     if (error) {
@@ -638,9 +629,15 @@ router.get('/obtenerTickets', async (req, res) => {
       console.error('obtener_tickets devolvió un ticket con formato inválido.');
       return res.status(502).json({ error: 'La respuesta contiene tickets con formato inválido.' });
     }
+    if (data.some((ticket) => normalizeTicketera(ticket.tipo_ticketera) !== ticketera)) {
+      console.error('obtener_tickets devolvio casos de otra ticketera.');
+      return res.status(502).json({ error: 'La respuesta contiene casos fuera de la ticketera solicitada.' });
+    }
 
     const userEmail = requesterEmail;
+    const requiresConcreteMatch = !ticketPermissions(req.user).list && scope !== 'mine';
     const filteredTickets = data.filter((ticket) => {
+      if (requiresConcreteMatch && !ticketMatchesSearch(ticket, search)) return false;
       if (userEmail && String(ticket.email || '').trim().toLowerCase() !== userEmail) return false;
       const rawType = String(ticket.tipo_reg || ticket.type || ticket.tipo || '').trim().toLowerCase();
       const ticketType = rawType === 'it' ? 'itracker' : rawType;

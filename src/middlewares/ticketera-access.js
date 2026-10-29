@@ -1,11 +1,11 @@
 const { supabase } = require('../config/database');
+const { ticketRange, ticketPermissions } = require('../utils/ticket-access');
 
 const TICKET_TOOLS = [
   { id_herramienta: 10, nombre: 'TICKETERA_ONBOARDING', ticketera: 'ONBOARDING' },
   { id_herramienta: 11, nombre: 'TICKETERA_VENTAS', ticketera: 'VENTAS' },
   { id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA', ticketera: 'DEGRA' }
 ];
-const ALL_TICKETERA_RANGES = new Set([1, 3, 4]);
 
 function normalizeTicketera(value) {
   const name = typeof value === 'string' || typeof value === 'number'
@@ -18,38 +18,25 @@ function normalizeTicketera(value) {
   return ['ABONO/DEGRA', 'ABONO-DEGRA'].includes(name) ? 'DEGRA' : name;
 }
 
-async function loadTicketeraAccess(req, res, next) {
+function loadTicketeraAccess(req, res, next) {
   if (req.ticketeraAccess) return next();
   const email = typeof req.user?.email === 'string' ? req.user.email.trim() : '';
   if (!email) return res.status(401).json({ error: 'No se pudo identificar al usuario autenticado.' });
-  const rawRange = req.user?.rango;
-  const range = !['number', 'string'].includes(typeof rawRange) || String(rawRange).trim() === ''
-    ? NaN : Number(rawRange);
-  if (!Number.isInteger(range) || range < 0 || range > 5) {
+  if (ticketRange(req.user) === null) {
     return res.status(403).json({ error: 'El perfil no tiene acceso a la ticketera.' });
   }
 
-  if (ALL_TICKETERA_RANGES.has(range)) {
-    req.ticketeraAccess = TICKET_TOOLS;
-    return next();
+  const tools = req.user.herramientas;
+  if (!Array.isArray(tools) || tools.some((tool) => !tool || typeof tool.nombre !== 'string'
+    || !['number', 'string'].includes(typeof tool.id_herramienta))) {
+    console.warn('JWT sin asignaciones de herramientas validas para Ticketera.');
+    return res.status(403).json({ error: 'La sesion no contiene herramientas validas. Volve a iniciar sesion.' });
   }
-
-  try {
-    const { data, error } = await supabase.rpc('obtener_herramientas_usuario', { p_mail: email });
-    if (error) throw error;
-    if (!Array.isArray(data) || data.some((tool) => !tool || typeof tool.nombre !== 'string')) {
-      console.error('Respuesta invalida de obtener_herramientas_usuario al autorizar Ticketera.');
-      return res.status(502).json({ error: 'No se pudieron verificar las herramientas de Ticketera.' });
-    }
-    req.ticketeraAccess = TICKET_TOOLS.filter((required) => data.some((tool) =>
-      Number(tool.id_herramienta) === required.id_herramienta
-      || tool.nombre.trim().toUpperCase() === required.nombre
-    ));
-    return next();
-  } catch (error) {
-    console.error('Error al verificar el acceso a Ticketera:', error);
-    return res.status(500).json({ error: 'No se pudieron verificar los permisos de Ticketera.' });
-  }
+  req.ticketeraAccess = TICKET_TOOLS.filter((required) => tools.some((tool) =>
+    Number(tool.id_herramienta) === required.id_herramienta
+    && tool.nombre.trim().toUpperCase() === required.nombre
+  ));
+  return next();
 }
 
 function hasTicketeraAccess(req, ticketera) {
@@ -70,6 +57,21 @@ function requireTicketeraAccess(ticketera) {
 
 function sendTicketeraAccess(req, res) {
   return res.json(req.ticketeraAccess.map(({ id_herramienta, nombre }) => ({ id_herramienta, nombre })));
+}
+
+function sendTicketeraPolicy(req, res) {
+  const user = req.user;
+  return res.json({
+    herramientas: req.ticketeraAccess.map(({ id_herramienta, nombre }) => ({ id_herramienta, nombre })),
+    permisos: ticketPermissions(user),
+    perfil: {
+      email: user.email, rango: ticketRange(user), rol: user.rol,
+      usuario: user.usuario ?? null,
+      segmentos: Array.isArray(user.segmento)
+        ? user.segmento.map((segmento) => ({ segmento }))
+        : typeof user.segmento === 'string' ? [{ segmento: user.segmento }] : []
+    }
+  });
 }
 
 function requireTicketeraCase(ticketera) {
@@ -97,5 +99,5 @@ function requireTicketeraCase(ticketera) {
 
 module.exports = {
   loadTicketeraAccess, hasTicketeraAccess, normalizeTicketera,
-  requireTicketeraAccess, sendTicketeraAccess, requireTicketeraCase
+  requireTicketeraAccess, sendTicketeraAccess, sendTicketeraPolicy, requireTicketeraCase
 };

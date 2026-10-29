@@ -10,6 +10,7 @@ let missingCases = [];
 let missingFilters = [];
 const missingQuery = {
   select: () => missingQuery,
+  eq: (column, value) => { missingFilters.push({ column, value }); return missingQuery; },
   is: () => missingQuery,
   in: (column, values) => { missingFilters.push({ column, values }); return missingQuery; },
   then: (resolve, reject) => Promise.resolve({ data: missingCases, error: null }).then(resolve, reject)
@@ -34,7 +35,8 @@ before(async () => {
     if (req.headers['x-test-range']) req.user = { rango: req.headers['x-test-range'], email: 'user@example.com' };
     // Permission middleware has its own integration matrix; these tests focus on analytics.
     if (['0', '1', '2', '3', '4', '5'].includes(req.headers['x-test-range'])) {
-      req.ticketeraAccess = [{ ticketera: 'ONBOARDING' }];
+      req.ticketeraAccess = (req.headers['x-test-services'] || 'ONBOARDING').split(',')
+        .map((ticketera) => ({ ticketera }));
     }
     next();
   });
@@ -46,9 +48,10 @@ before(async () => {
 });
 after(async () => { await new Promise((resolve) => server.close(resolve)); });
 
-async function post(body, range = '2', detail = false, exporting = false) {
+async function post(body, range = '2', detail = false, exporting = false, services = 'ONBOARDING') {
   return fetch(`${base}/tickets/analytics${exporting ? '/export' : detail ? '/detail' : ''}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...(range ? { 'x-test-range': range } : {}) },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-services': services,
+      ...(range ? { 'x-test-range': range } : {}) },
     body: JSON.stringify(body)
   });
 }
@@ -79,7 +82,8 @@ test('export returns all rows and columns, using applied filters without detail 
     granularidad: 'semana', zona_horaria: 'UTC' }, '5', false, true);
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), payload);
-  assert.deepEqual(calls.at(-1), { name: 'exportar_analitica_ticketera_onboarding', params: {
+  assert.deepEqual(calls.at(-1), { name: 'exportar_analitica_ticketera_multi', params: {
+    p_servicio: 'ONBOARDING',
     p_desde: '2026-10-01', p_hasta: '2026-10-24', p_lideres: ['A'], p_canales: ['digital'],
     p_tipos: ['ticket', 'itracker'], p_estados: ['resuelto'], p_granularidad: 'semana', p_zona_horaria: 'UTC'
   } });
@@ -115,8 +119,8 @@ test('multiple filters are passed as RPC arguments; null date means no limit', a
     granularidad: 'semana', zona_horaria: 'America/Argentina/Buenos_Aires' });
   assert.equal(response.status, 200);
   assert.deepEqual(calls.at(-1), {
-    name: 'obtener_analitica_ticketera_onboarding',
-    params: { p_hasta: '2026-10-22', p_lideres: ['A', 'B'],
+    name: 'obtener_analitica_ticketera_multi',
+    params: { p_servicio: 'ONBOARDING', p_hasta: '2026-10-22', p_lideres: ['A', 'B'],
       p_canales: ['digital', 'telefonico'], p_tipos: ['ticket'], p_estados: [],
       p_granularidad: 'semana', p_zona_horaria: 'America/Argentina/Buenos_Aires' }
   });
@@ -136,8 +140,8 @@ test('detail passes the selection and pagination, without granularity', async ()
   const response = await post({ dimension: 'submotivo', valor: 'Otros', motivo: 'delivery',
     pagina: 2, tamano: 20, granularidad: 'auto' }, '5', true);
   assert.equal(response.status, 200);
-  assert.deepEqual(calls.at(-1), { name: 'obtener_detalle_analitica_ticketera_onboarding',
-    params: { p_dimension: 'submotivo', p_valor: 'Otros', p_motivo: 'delivery', p_pagina: 2, p_tamano: 20 } });
+  assert.deepEqual(calls.at(-1), { name: 'obtener_detalle_analitica_ticketera_multi',
+    params: { p_servicio: 'ONBOARDING', p_dimension: 'submotivo', p_valor: 'Otros', p_motivo: 'delivery', p_pagina: 2, p_tamano: 20 } });
   for (const body of [{ pagina: 0 }, { tamano: 101 }, { pagina: 1.5 }]) {
     assert.equal((await post(body, '2', true)).status, 400);
   }
@@ -170,9 +174,52 @@ test('missing dates include ticket identifiers and exclusion flags respecting ap
     { caso_id: 29, id_tck: 'TCK-29', excluido_por_fechas: false }
   ]);
   assert.deepEqual(missingFilters, [
+    { column: 'tipo_ticketera', value: 3 },
     { column: 'lider', values: ['A'] }, { column: 'canal', values: ['digital'] },
     { column: 'tipo', values: ['ticket'] }
   ]);
   const unbounded = await post({});
   assert.ok((await unbounded.json()).calidad_datos.casos_sin_fecha.every((item) => !item.excluido_por_fechas));
+});
+
+test('all endpoints authorize the requested service without requiring ONBOARDING', async () => {
+  for (const servicio of ['ONBOARDING', 'VENTAS', 'DEGRA']) {
+    for (const mode of ['summary', 'detail', 'export']) {
+      result = { data: mode === 'detail' ? { items: [], total: 0 }
+        : mode === 'export' ? { analitica: { kpis: {}, distribuciones: {}, volumen: [] },
+          columnas: ['id'], items: [], total: 0 }
+        : { kpis: {}, distribuciones: {}, volumen: [] }, error: null };
+      calls = [];
+      assert.equal((await post({ servicio }, '2', mode === 'detail', mode === 'export', servicio)).status, 200);
+      assert.equal(calls.at(-1).params.p_servicio, servicio);
+      calls = [];
+      const other = servicio === 'VENTAS' ? 'DEGRA' : 'VENTAS';
+      assert.equal((await post({ servicio: other }, '2', mode === 'detail', mode === 'export', servicio)).status, 403);
+      assert.equal(calls.length, 0);
+    }
+  }
+});
+
+test('service aliases normalize and invalid services never call Supabase', async () => {
+  result = { data: { kpis: {}, distribuciones: {}, volumen: [] }, error: null };
+  for (const [alias, servicio] of [[' onbo ', 'ONBOARDING'], ['abono', 'DEGRA'], ['ABONO/DEGRA', 'DEGRA']]) {
+    assert.equal((await post({ servicio: alias }, '2', false, false, servicio)).status, 200);
+    assert.equal(calls.at(-1).params.p_servicio, servicio);
+  }
+  for (const servicio of [null, '', [], {}, 2, 'SOPORTE']) {
+    calls = [];
+    assert.equal((await post({ servicio })).status, 400);
+    assert.equal(calls.length, 0);
+  }
+});
+
+test('missing-date diagnostics are restricted to each requested ticketera', async () => {
+  missingCases = [];
+  for (const [servicio, id] of [['VENTAS', 2], ['DEGRA', 4]]) {
+    missingFilters = [];
+    result = { data: { kpis: {}, distribuciones: {}, volumen: [],
+      calidad_datos: { sin_fecha_carga: 1 } }, error: null };
+    assert.equal((await post({ servicio }, '5', false, false, servicio)).status, 200);
+    assert.deepEqual(missingFilters, [{ column: 'tipo_ticketera', value: id }]);
+  }
 });

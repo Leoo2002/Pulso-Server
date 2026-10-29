@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const { randomUUID } = require('crypto');
 const { supabase } = require('../config/database');
-const { hasBackOfficeAccess } = require('../utils/ticket-access');
+const { ticketPermissions } = require('../utils/ticket-access');
 const { loadTicketeraAccess } = require('../middlewares/ticketera-access');
 const { optimizeImage, ImageValidationError } = require('../utils/optimize-image');
 
@@ -180,6 +180,14 @@ router.get('/alertas-operativas', requireServiceAccess, async (req, res) => {
       console.error('obtener_alertas_operativas devolvió una respuesta inválida.');
       return res.status(502).json({ error: 'La respuesta de alertas operativas tiene un formato inválido.' });
     }
+    if (data.some((alert) => {
+      const services = Array.isArray(alert.servicios) ? alert.servicios : [alert.servicio];
+      return !services.some((service) => typeof service === 'string'
+        && (SERVICE_ALIASES[service.trim().toUpperCase()] || service.trim().toUpperCase()) === req.operationalAlertService);
+    })) {
+      console.error('obtener_alertas_operativas devolvio alertas fuera de la ticketera solicitada.');
+      return res.status(502).json({ error: 'La respuesta contiene alertas fuera de la ticketera solicitada.' });
+    }
     const alerts = await Promise.all(data.map(withDisplayImageUrl));
     return res.json(alerts);
   } catch (error) {
@@ -189,7 +197,7 @@ router.get('/alertas-operativas', requireServiceAccess, async (req, res) => {
 });
 
 router.post('/alertas-operativas', receiveAlertImage, requireServiceAccess, async (req, res) => {
-  if (!hasBackOfficeAccess(req.user)) {
+  if (!ticketPermissions(req.user).createAlert) {
     return res.status(403).json({ error: 'Solo los perfiles de gestión pueden cargar alertas operativas.' });
   }
   const normalized = normalizeAlert(req.body);
@@ -251,7 +259,7 @@ router.post('/alertas-operativas', receiveAlertImage, requireServiceAccess, asyn
 });
 
 router.delete('/alertas-operativas/:id', requireServiceAccess, async (req, res) => {
-  if (Number(req.user.rango) === 0) {
+  if (!ticketPermissions(req.user).deleteAlert) {
     return res.status(403).json({ error: 'Los agentes no pueden eliminar alertas operativas.' });
   }
 
