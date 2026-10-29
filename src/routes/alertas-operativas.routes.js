@@ -4,6 +4,7 @@ const { randomUUID } = require('crypto');
 const { supabase } = require('../config/database');
 const { hasBackOfficeAccess } = require('../utils/ticket-access');
 const { loadTicketeraAccess } = require('../middlewares/ticketera-access');
+const { optimizeImage, ImageValidationError } = require('../utils/optimize-image');
 
 const router = express.Router();
 const IMAGE_BUCKET = 'ticketera-imagenes';
@@ -71,7 +72,7 @@ async function authorizeService(req, res, next) {
 
     req.operationalAlertService = service;
     if (req.method === 'POST') {
-      const requestedServices = req.body?.servicios;
+      const requestedServices = req.body?.servicios ?? [service];
       let services;
       try {
         services = typeof requestedServices === 'string'
@@ -91,14 +92,12 @@ async function authorizeService(req, res, next) {
       if (normalizedServices.some((item) => !['VENTAS', 'ONBOARDING', 'DEGRA'].includes(item))) {
         return res.status(400).json({ error: 'Seleccioná únicamente Ventas, Onboarding o Abono/Degra.' });
       }
-      const uniqueServices = [...new Set(normalizedServices)];
-      const missingAccess = uniqueServices.find((item) => !grantedTools.has(SERVICES[item]));
-      if (missingAccess) {
-        return res.status(403).json({
-          error: `No tienes permisos para publicar alertas en ${missingAccess}.`
+      if (normalizedServices.length !== 1 || normalizedServices[0] !== service) {
+        return res.status(400).json({
+          error: 'La alerta solo se puede publicar en la ticketera activa.'
         });
       }
-      req.operationalAlertServices = uniqueServices;
+      req.operationalAlertServices = [service];
     }
     return next();
   } catch (error) {
@@ -196,19 +195,18 @@ router.post('/alertas-operativas', receiveAlertImage, requireServiceAccess, asyn
   const normalized = normalizeAlert(req.body);
   if (normalized.error) return res.status(400).json({ error: normalized.error });
 
-  const image = req.file;
-  const imageExtension = image ? IMAGE_EXTENSIONS[image.mimetype] : null;
-  const imagePath = image
-    ? `alertas-operativas/${req.operationalAlertServices[0].toLocaleLowerCase('es')}/${randomUUID()}${imageExtension}`
-    : null;
   let uploadedImagePath = null;
   try {
+    const image = req.file ? await optimizeImage(req.file) : null;
+    const imagePath = image
+      ? `alertas-operativas/${req.operationalAlertServices[0].toLocaleLowerCase('es')}/${randomUUID()}${image.extension}`
+      : null;
     let displayImageUrl = null;
     if (image && imagePath) {
       const { error: uploadError } = await supabase.storage
         .from(IMAGE_BUCKET)
         .upload(imagePath, image.buffer, {
-          contentType: image.mimetype,
+          contentType: image.contentType,
           upsert: false
         });
       if (uploadError) throw uploadError;
@@ -240,6 +238,9 @@ router.post('/alertas-operativas', receiveAlertImage, requireServiceAccess, asyn
     uploadedImagePath = null;
     return res.status(201).json({ ...alert, imagen_url: displayImageUrl });
   } catch (error) {
+    if (error instanceof ImageValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error('Error inesperado al crear alerta operativa:', error);
     if (uploadedImagePath) {
       const { error: cleanupError } = await supabase.storage.from(IMAGE_BUCKET).remove([uploadedImagePath]);
@@ -250,8 +251,8 @@ router.post('/alertas-operativas', receiveAlertImage, requireServiceAccess, asyn
 });
 
 router.delete('/alertas-operativas/:id', requireServiceAccess, async (req, res) => {
-  if (!hasBackOfficeAccess(req.user)) {
-    return res.status(403).json({ error: 'Solo los perfiles de gestión pueden eliminar alertas operativas.' });
+  if (Number(req.user.rango) === 0) {
+    return res.status(403).json({ error: 'Los agentes no pueden eliminar alertas operativas.' });
   }
 
   const alertId = Number(req.params.id);
@@ -260,6 +261,28 @@ router.delete('/alertas-operativas/:id', requireServiceAccess, async (req, res) 
   }
 
   try {
+    const { data: alerts, error: scopeError } = await supabase.rpc('obtener_alertas_operativas', {
+      p_servicio: req.operationalAlertService,
+      p_tipo_severidad: null
+    });
+    if (scopeError) throw scopeError;
+    if (!Array.isArray(alerts) || alerts.some((alert) => !isAlertRecord(alert))) {
+      console.error('Respuesta inválida al verificar la ticketera de la alerta.');
+      return res.status(502).json({ error: 'No se pudo verificar la ticketera de la alerta.' });
+    }
+    const alert = alerts.find((item) => String(item.id) === String(alertId));
+    if (!alert) {
+      return res.status(404).json({ error: 'No existe una alerta con ese ID en la ticketera activa.' });
+    }
+    const destinations = Array.isArray(alert.servicios) ? alert.servicios : [alert.servicio];
+    const services = destinations.map((value) => typeof value === 'string'
+      ? SERVICE_ALIASES[value.trim().toUpperCase()] || value.trim().toUpperCase()
+      : '');
+    if (!services.includes(req.operationalAlertService)
+      || services.some((service) => !SERVICES[service]
+        || !req.ticketeraAccess.some((tool) => tool.nombre === SERVICES[service]))) {
+      return res.status(403).json({ error: 'No tienes permisos para eliminar alertas de otra ticketera.' });
+    }
     const { data, error } = await supabase.rpc('eliminar_alerta_operativa', { p_id: alertId });
     if (error) {
       console.error('Error al eliminar alerta operativa:', error);

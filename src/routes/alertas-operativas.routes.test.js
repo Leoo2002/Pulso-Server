@@ -1,6 +1,7 @@
-const { test, before, after } = require('node:test');
+const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
+const sharp = require('sharp');
 
 const databasePath = require.resolve('../config/database');
 const originalDatabase = require.cache[databasePath];
@@ -10,10 +11,16 @@ let tools = [];
 let uploadedFiles = [];
 let removedFiles = [];
 let storageRemoveError = null;
+let deletionScope;
+let deletionScopeError = null;
+beforeEach(() => {
+  deletionScope = undefined;
+  deletionScopeError = null;
+});
 const storage = {
   from: () => ({
     upload: async (filePath, buffer, options) => {
-      uploadedFiles.push({ filePath, size: buffer.length, options });
+      uploadedFiles.push({ filePath, buffer, size: buffer.length, options });
       return { error: null };
     },
     createSignedUrl: async (filePath, expiresIn) => ({
@@ -29,6 +36,9 @@ const storage = {
 const rpc = async (name, params) => {
   calls.push({ name, params });
   if (name === 'obtener_herramientas_usuario') return { data: tools, error: null };
+  if (name === 'obtener_alertas_operativas' && deletionScope !== undefined) {
+    return { data: deletionScope, error: deletionScopeError };
+  }
   return rpcResult;
 };
 require.cache[databasePath] = {
@@ -155,35 +165,39 @@ test('creates a validated alert only for management profiles', async () => {
     tipo_severidad: 'Alta',
     comentario: 'Se interrumpirá el servicio',
     servicio: 'DEGRA',
-    servicios: ['DEGRA', 'VENTAS', 'ONBOARDING'],
+    servicios: ['DEGRA'],
     imagen_url: 'alertas-operativas/abono-degra/unique-id.png',
     fecha_creacion: '2026-10-27T12:00:00Z'
   }, error: null };
   uploadedFiles = [];
   removedFiles = [];
+  const image = await sharp({
+    create: { width: 2400, height: 1600, channels: 3, background: '#8060c0' }
+  }).png().toBuffer();
   const response = await post({
     servicio: 'ABONO/DEGRA',
-    servicios: ['DEGRA', 'VENTAS', 'ONBOARDING'],
+    servicios: ['DEGRA'],
     titulo_aviso: ' Mantenimiento ',
     tipo_severidad: 'Alta',
     comentario: ' Se interrumpirá el servicio '
-  }, 5, { name: 'aviso.png', type: 'image/png', contents: 'fake-image' });
+  }, 5, { name: 'aviso.png', type: 'image/png', contents: image });
   assert.equal(response.status, 201);
   assert.deepEqual(await response.json(), {
     ...rpcResult.data,
     imagen_url: `https://signed.example/${uploadedFiles[0].filePath}?expires=3600`
   });
   assert.equal(uploadedFiles.length, 1);
-  assert.equal(uploadedFiles[0].size, 'fake-image'.length);
-  assert.equal(uploadedFiles[0].options.contentType, 'image/png');
-  assert.match(uploadedFiles[0].filePath, /^alertas-operativas\/degra\/.+\.png$/);
+  assert.ok(uploadedFiles[0].size < image.length);
+  assert.equal(uploadedFiles[0].options.contentType, 'image/webp');
+  assert.equal((await sharp(uploadedFiles[0].buffer).metadata()).width, 1920);
+  assert.match(uploadedFiles[0].filePath, /^alertas-operativas\/degra\/.+\.webp$/);
   assert.deepEqual(calls.at(-1), {
     name: 'crear_alerta_operativa_multi',
     params: {
       p_titulo_aviso: 'Mantenimiento',
       p_tipo_severidad: 'Alta',
       p_comentario: 'Se interrumpirá el servicio',
-      p_servicios: ['DEGRA', 'VENTAS', 'ONBOARDING'],
+      p_servicios: ['DEGRA'],
       p_imagen_url: uploadedFiles[0].filePath
     }
   });
@@ -213,7 +227,7 @@ test('rejects invalid alert input without calling the create RPC', async () => {
   }
 });
 
-test('requires permission for every destination ticketera', async () => {
+test('rejects publishing to any destination other than the active ticketera', async () => {
   tools = [{ nombre: 'TICKETERA_ABONO_DEGRA' }];
   calls = [];
   const response = await post({
@@ -223,7 +237,7 @@ test('requires permission for every destination ticketera', async () => {
     tipo_severidad: 'Alta',
     comentario: 'Detalle'
   });
-  assert.equal(response.status, 403);
+  assert.equal(response.status, 400);
   assert.equal(calls.some((call) => call.name === 'crear_alerta_operativa_multi'), false);
 });
 
@@ -255,6 +269,37 @@ test('rejects unsupported image types before upload', async () => {
   assert.equal(uploadedFiles.length, 0);
 });
 
+test('rejects corrupted images without storing a file or creating the alert', async () => {
+  tools = [{ nombre: 'TICKETERA_VENTAS' }];
+  calls = [];
+  uploadedFiles = [];
+  const response = await post({
+    servicio: 'VENTAS', servicios: ['VENTAS'],
+    titulo_aviso: 'Aviso', tipo_severidad: 'Alta', comentario: 'Detalle'
+  }, 5, { name: 'aviso.png', type: 'image/png', contents: 'fake-image' });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /No se pudo leer la imagen/);
+  assert.equal(uploadedFiles.length, 0);
+  assert.equal(calls.some(({ name }) => name === 'crear_alerta_operativa_multi'), false);
+});
+
+test('cleans up the optimized image if the create RPC fails', async () => {
+  tools = [{ nombre: 'TICKETERA_VENTAS' }];
+  uploadedFiles = [];
+  removedFiles = [];
+  rpcResult = { data: null, error: { message: 'Creation failed' } };
+  const image = await sharp({
+    create: { width: 100, height: 100, channels: 3, background: 'white' }
+  }).png().toBuffer();
+  const response = await post({
+    servicio: 'VENTAS', servicios: ['VENTAS'],
+    titulo_aviso: 'Aviso', tipo_severidad: 'Alta', comentario: 'Detalle'
+  }, 5, { name: 'aviso.png', type: 'image/png', contents: image });
+  assert.equal(response.status, 500);
+  assert.equal(uploadedFiles.length, 1);
+  assert.deepEqual(removedFiles, [uploadedFiles[0].filePath]);
+});
+
 test('deletes an alert through the public RPC and removes its stored image', async () => {
   tools = [{ nombre: 'TICKETERA_ONBOARDING' }];
   const alert = {
@@ -263,7 +308,7 @@ test('deletes an alert through the public RPC and removes its stored image', asy
     tipo_severidad: 'Alta',
     comentario: 'Detalle',
     servicio: 'ONBOARDING',
-    servicios: ['ONBOARDING', 'VENTAS'],
+    servicios: ['ONBOARDING'],
     imagen_url: 'alertas-operativas/onboarding/image.png',
     fecha_creacion: '2026-10-27T12:00:00Z'
   };
@@ -271,6 +316,7 @@ test('deletes an alert through the public RPC and removes its stored image', asy
     data: { estado: 'ok', mensaje: 'Alerta eliminada correctamente.', alerta: alert },
     error: null
   };
+  deletionScope = [alert];
   calls = [];
   removedFiles = [];
   storageRemoveError = null;
@@ -302,7 +348,70 @@ test('deletion validates alert ID, service access and management profile', async
 test('returns not found when the delete function reports a missing alert', async () => {
   tools = [{ nombre: 'TICKETERA_VENTAS' }];
   rpcResult = { data: null, error: { message: 'No existe una alerta con ID 21.' } };
+  deletionScope = [];
   const response = await removeAlert(21);
   assert.equal(response.status, 404);
-  assert.deepEqual(await response.json(), { error: 'No existe una alerta con ese ID.' });
+  assert.deepEqual(await response.json(), { error: 'No existe una alerta con ese ID en la ticketera activa.' });
+});
+
+test('allows every non-agent range to delete within its authorized active ticketera', async () => {
+  const alert = {
+    id: 21, titulo_aviso: 'Aviso', tipo_severidad: 'Alta', comentario: 'Detalle',
+    servicio: 'VENTAS', imagen_url: null, fecha_creacion: '2026-10-27T12:00:00Z'
+  };
+  tools = [{ nombre: 'TICKETERA_VENTAS' }];
+  deletionScope = [alert];
+  rpcResult = { data: { estado: 'ok', alerta: alert }, error: null };
+  for (const range of [1, 2, 3, 4, 5]) {
+    assert.equal((await removeAlert(21, 'VENTAS', range)).status, 200);
+  }
+  assert.equal((await removeAlert(21, 'VENTAS', 0)).status, 403);
+  assert.equal((await removeAlert(21, 'VENTAS', 6)).status, 403);
+});
+
+test('never deletes a foreign ID, even when the caller can access both ticketeras', async () => {
+  tools = [{ nombre: 'TICKETERA_VENTAS' }, { nombre: 'TICKETERA_ONBOARDING' }];
+  deletionScope = [{
+    id: 21, titulo_aviso: 'Otra operación', tipo_severidad: 'Alta', comentario: 'Detalle',
+    servicio: 'ONBOARDING', imagen_url: null, fecha_creacion: '2026-10-27T12:00:00Z'
+  }];
+  calls = [];
+  assert.equal((await removeAlert(21, 'VENTAS')).status, 403);
+  deletionScope = [];
+  assert.equal((await removeAlert(21, 'VENTAS')).status, 404);
+  assert.equal(calls.some(({ name }) => name === 'eliminar_alerta_operativa'), false);
+});
+
+test('fails closed on scope lookup errors and legacy alerts shared with inaccessible ticketeras', async () => {
+  tools = [{ nombre: 'TICKETERA_VENTAS' }];
+  deletionScope = [{
+    id: 21, titulo_aviso: 'Compartida', tipo_severidad: 'Alta', comentario: 'Detalle',
+    servicio: 'VENTAS', servicios: ['VENTAS', 'ONBOARDING'],
+    imagen_url: null, fecha_creacion: '2026-10-27T12:00:00Z'
+  }];
+  calls = [];
+  assert.equal((await removeAlert(21)).status, 403);
+  deletionScopeError = new Error('Scope unavailable');
+  assert.equal((await removeAlert(21)).status, 500);
+  deletionScopeError = null;
+  deletionScope = null;
+  assert.equal((await removeAlert(21)).status, 502);
+  assert.equal(calls.some(({ name }) => name === 'eliminar_alerta_operativa'), false);
+});
+
+test('derives the publication destination when omitted and rejects multi-service input even for admins', async () => {
+  tools = [{ nombre: 'TICKETERA_VENTAS' }];
+  const alert = {
+    id: 21, titulo_aviso: 'Aviso', tipo_severidad: 'Alta', comentario: 'Detalle',
+    servicio: 'VENTAS', imagen_url: null, fecha_creacion: '2026-10-27T12:00:00Z'
+  };
+  rpcResult = { data: alert, error: null };
+  calls = [];
+  const body = { servicio: 'VENTAS', titulo_aviso: 'Aviso', tipo_severidad: 'Alta', comentario: 'Detalle' };
+  assert.equal((await post(body)).status, 201);
+  assert.deepEqual(calls.at(-1).params.p_servicios, ['VENTAS']);
+  calls = [];
+  assert.equal((await post({ ...body, servicios: ['VENTAS', 'ONBOARDING'] }, 1)).status, 400);
+  assert.equal((await post({ ...body, servicios: ['ONBOARDING'] }, 1)).status, 400);
+  assert.equal(calls.some(({ name }) => name === 'crear_alerta_operativa_multi'), false);
 });

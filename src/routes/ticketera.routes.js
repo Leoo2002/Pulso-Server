@@ -10,6 +10,7 @@ const {
   requireTicketeraCase
 } = require('../middlewares/ticketera-access');
 const { createTicketeraCase } = require('../services/ticketera-create.service');
+const { optimizeImage, ImageValidationError } = require('../utils/optimize-image');
 
 router.use(['/crearTicketeraTicket', '/crearIT', '/actualizarEstadoTicketera', '/lideresTck'],
   requireTicketeraAccess('ONBOARDING'));
@@ -661,28 +662,25 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
     }
 
     const imagenesRegistradas = [];
+    const imagenesOptimizadas = [];
+    for (const archivo of archivos) {
+      imagenesOptimizadas.push(await optimizeImage(archivo));
+    }
 
     // 3. Subir cada imagen y registrar sus metadatos.
     for (let i = 0; i < archivos.length; i++) {
       const archivo = archivos[i];
+      const imagen = imagenesOptimizadas[i];
       const orden = posicionesLibres[i];
 
-      const extensiones = {
-        'image/jpeg': '.jpg',
-        'image/png': '.png',
-        'image/webp': '.webp'
-      };
-
-      const extension = extensiones[archivo.mimetype];
-
-      const nombreArchivo = `${caso.id_tck}-${orden}${extension}`;
+      const nombreArchivo = `${caso.id_tck}-${orden}${imagen.extension}`;
       const ruta = `tickets/${caso.id_tck}/${nombreArchivo}`;
 
       const { error: errorSubida } = await supabase
         .storage
         .from(bucket)
-        .upload(ruta, archivo.buffer, {
-          contentType: archivo.mimetype,
+        .upload(ruta, imagen.buffer, {
+          contentType: imagen.contentType,
           upsert: false
         });
 
@@ -698,8 +696,8 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
           ruta_archivo: ruta,
           nombre_original: path.basename(archivo.originalname),
           orden,
-          tipo_mime: archivo.mimetype,
-          tamano_bytes: archivo.size
+          tipo_mime: imagen.contentType,
+          tamano_bytes: imagen.size
         })
         .select('id, caso_id, ruta_archivo, orden')
         .single();
@@ -717,6 +715,9 @@ router.post('/subirImagenesTicketera', recibirImagenes, async (req, res) => {
     });
 
   } catch (error) {
+    if (error instanceof ImageValidationError) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error('Error al subir imágenes:', error);
 
     // Si falla una parte, intentar limpiar los archivos y registros

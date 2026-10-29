@@ -1,5 +1,58 @@
 # Server
 
+## Alcance de alertas operativas
+
+Las nuevas alertas se publican solo en la ticketera activa (`servicio`),
+validada contra los accesos del usuario autenticado. `servicios` es opcional:
+si se envia debe contener exactamente esa ticketera, incluso para administradores.
+Se conserva el permiso existente de publicacion (rangos 1 y 5).
+
+La eliminacion admite rangos 1 a 5, nunca agentes (0) ni perfiles invalidos.
+Antes de ejecutar la RPC de borrado por ID, el servidor consulta las alertas
+de la ticketera activa y verifica el ID y su pertenencia. Un ID ajeno o un
+fallo de verificacion no ejecuta el borrado. Las alertas antiguas compartidas
+requieren acceso a todos sus destinos, ya que el borrado es global.
+No requiere migraciones; desplegar backend y frontend juntos.
+
+## Optimizacion de imagenes antes de Supabase Storage
+
+Las nuevas cargas de alertas operativas, `/subirImagenesTicketera` y `/tickets`
+usan el mismo procesador `src/utils/optimize-image.js`, basado en `sharp`.
+No requiere migraciones ni cambios de buckets.
+
+- Decodifica el archivo real y comprueba que coincida con el MIME JPEG/PNG/WebP.
+  Rechaza archivos corruptos, animaciones y entradas de mas de 40 megapixeles
+  con un error 400 visible. Conserva los limites previos de bytes y permisos.
+- Corrige orientacion EXIF, elimina metadatos y limita el lado mayor a 1920px,
+  sin agrandar imagenes pequenas. Conserva la proporcion y transparencia.
+- Codifica WebP con calidad 82. Si supera el peso de entrada, compara tambien
+  una version limpia del formato de origen. Reutiliza el original unicamente
+  si es mas liviano y ya cumple dimensiones, orientacion y ausencia de metadatos.
+  La limpieza o reduccion obligatoria puede aumentar el peso en casos extremos;
+  no se sacrifica legibilidad con recompresiones sucesivas para alcanzar un peso fijo.
+- Guarda una sola version; la extension, el MIME y el peso registrado corresponden
+  al archivo almacenado. En `ticketera_imagenes`, `nombre_original` conserva el
+  nombre enviado como referencia; `ruta_archivo` y `tipo_mime` identifican la salida.
+- Valida todos los adjuntos de una solicitud antes de subir el primero. Mantiene
+  la limpieza de objetos y registros si falla la persistencia.
+
+Los enlaces firmados y las descargas sirven directamente la version almacenada,
+sin guardar miniaturas ni copias del original. No modifica imagenes existentes.
+El ahorro depende del contenido: validar capturas con texto pequeno antes de
+produccion; 1920px y calidad 82 son el criterio inicial, no una garantia de peso.
+
+Despliegue: instalar las dependencias (`npm install`; este repositorio ignora
+el lockfile) y reiniciar o redesplegar el backend. `sharp` requiere Node.js
+18.17+ o 20.3+; usar un Node LTS
+compatible y permitir instalar las dependencias opcionales nativas del sistema
+destino. El frontend no necesita cambios para consumir WebP.
+
+Pruebas locales, sin conectar con Supabase:
+
+```powershell
+node --test .\src\utils\optimize-image.test.js .\src\routes\image-uploads.routes.test.js .\src\routes\alertas-operativas.routes.test.js .\src\middlewares\ticketera-access.test.js
+```
+
 ## Proxy de Render
 
 Cuando Render define `RENDER=true`, Express confia en un salto de proxy

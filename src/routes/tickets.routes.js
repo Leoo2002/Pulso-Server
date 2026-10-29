@@ -4,6 +4,7 @@ const multer = require('multer');
 const { supabase } = require('../config/database');
 const { canUseTicketing, hasBackOfficeAccess, roleCode } = require('../utils/ticket-access');
 const { requireTicketeraAccess, hasTicketeraAccess } = require('../middlewares/ticketera-access');
+const { optimizeImage, ImageValidationError } = require('../utils/optimize-image');
 
 const router = express.Router();
 const BUCKET = 'pulso-ticket-attachments';
@@ -87,16 +88,6 @@ function uploadImages(req, res, next) {
     }
     return res.status(400).json({ error: error.message || 'No se pudieron procesar las imágenes.' });
   });
-}
-
-function hasValidImageSignature(file) {
-  const buffer = file.buffer;
-  if (file.mimetype === 'image/jpeg') return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
-  if (file.mimetype === 'image/png') return buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-  if (file.mimetype === 'image/webp') {
-    return buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP';
-  }
-  return false;
 }
 
 function escapeSearch(value) {
@@ -442,9 +433,6 @@ router.post('/tickets', uploadImages, async (req, res) => {
       leader = data;
     }
 
-    if ((req.files || []).some((file) => !hasValidImageSignature(file))) {
-      return res.status(400).json({ error: 'Una imagen adjunta no tiene un formato válido.' });
-    }
     if (normalized.type === 'itracker') {
       if ((req.files || []).some((file) => !['image/jpeg', 'image/png'].includes(file.mimetype))) {
         return res.status(400).json({ error: 'iTracker solo admite imágenes JPG o PNG.' });
@@ -455,20 +443,23 @@ router.post('/tickets', uploadImages, async (req, res) => {
     }
 
     const ticketId = crypto.randomUUID();
+    const optimizedImages = [];
     for (const file of req.files || []) {
-      const extension = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' })[file.mimetype];
-      const path = `${ticketId}/${crypto.randomUUID()}.${extension}`;
-      const { error } = await supabase.storage.from(BUCKET).upload(path, file.buffer, {
-        contentType: file.mimetype,
+      optimizedImages.push(await optimizeImage(file));
+    }
+    for (const image of optimizedImages) {
+      const path = `${ticketId}/${crypto.randomUUID()}${image.extension}`;
+      const { error } = await supabase.storage.from(BUCKET).upload(path, image.buffer, {
+        contentType: image.contentType,
         upsert: false
       });
       if (error) throw error;
       uploadedPaths.push(path);
       attachments.push({
         path,
-        name: file.originalname.replace(/[\\/]/g, '_').slice(0, 150),
-        contentType: file.mimetype,
-        size: file.size
+        name: image.name,
+        contentType: image.contentType,
+        size: image.size
       });
     }
 
@@ -510,6 +501,9 @@ router.post('/tickets', uploadImages, async (req, res) => {
     if (uploadedPaths.length) {
       const { error: cleanupError } = await supabase.storage.from(BUCKET).remove(uploadedPaths);
       if (cleanupError) console.error('No se pudieron limpiar adjuntos tras fallar la creación del ticket:', cleanupError);
+    }
+    if (error instanceof ImageValidationError) {
+      return res.status(400).json({ error: error.message });
     }
     console.error('Error al crear ticket:', error);
     res.status(500).json({ error: 'No se pudo crear el ticket. Inténtalo nuevamente.' });
