@@ -38,6 +38,8 @@ const ticketeraAnalyticsRoutes = require('./src/routes/ticketera-analytics.route
 const operationalAlertsRoutes = require('./src/routes/alertas-operativas.routes');
 
 const app = express();
+// Render termina la conexion del cliente en su proxy de entrada.
+app.set('trust proxy', process.env.RENDER === 'true' ? 1 : false);
 const port = process.env.PORT || 5000;
 
 // Configuración de middlewares globales

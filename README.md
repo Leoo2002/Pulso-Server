@@ -1,5 +1,18 @@
 # Server
 
+## Proxy de Render
+
+Cuando Render define `RENDER=true`, Express confia en un salto de proxy
+(`trust proxy = 1`) antes de los limitadores. Fuera de Render se mantiene
+`trust proxy = false`. No usar `true` para confiar en toda la cadena ni
+desactivar las validaciones de express-rate-limit.
+
+Esto permite usar la IP que el proxy de entrada informa en X-Forwarded-For.
+Si Netlify actua como proxy, esa IP puede ser la de Netlify y compartir
+limites entre usuarios. No aumentar los saltos sin verificar la cadena y
+restringir los caminos de acceso directo al backend.
+Redesplegar el servidor para aplicar el ajuste.
+
 ## CORS
 
 Se permiten solicitudes desde `https://pulso-arg.netlify.app`, el origen
