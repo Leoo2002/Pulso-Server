@@ -1,5 +1,20 @@
 # Server
 
+## CORS
+
+Se permiten solicitudes desde `https://pulso-arg.netlify.app`, el origen
+configurado en `FRONTEND_URL`, `http://localhost:4200` y `http://localhost:3000`.
+Los origenes se comparan sin barra final. Se mantienen las credenciales,
+los metodos GET/POST/PUT/PATCH/DELETE/OPTIONS y los encabezados
+Content-Type/Authorization. Otros origenes no reciben autorizacion CORS.
+
+La configuracion esta en `src/config/cors.js`; reiniciar o redesplegar el
+servidor para aplicar cambios. Prueba local sin servicios externos:
+
+```powershell
+node --test .\src\config\cors.test.js
+```
+
 ## Acceso a Ticketera
 
 `src/middlewares/ticketera-access.js` resuelve permisos a partir del correo y
