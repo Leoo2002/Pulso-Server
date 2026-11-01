@@ -223,3 +223,30 @@ test('missing-date diagnostics are restricted to each requested ticketera', asyn
     assert.deepEqual(missingFilters, [{ column: 'tipo_ticketera', value: id }]);
   }
 });
+
+test('teams summary uses applied filters without granularity and validates its shape', async () => {
+  const payload = { total: { total: 3 }, equipos: [{ lider: 'A', total: 3, agentes: [{ usuario: 'U1', total: 3 }] }],
+    agentes: [{ usuario: 'U1', equipos: ['A'], total: 3 }] };
+  result = { data: payload, error: null };
+  const teams = (body, range = '2', services = 'ONBOARDING') => fetch(`${base}/tickets/analytics/teams`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-test-services': services,
+      ...(range ? { 'x-test-range': range } : {}) },
+    body: JSON.stringify(body)
+  });
+  calls = [];
+  const response = await teams({ servicio: 'VENTAS', desde: '2026-10-01', lideres: ['A'], tipos: ['itracker'],
+    granularidad: 'mes' }, '5', 'VENTAS');
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), payload);
+  assert.deepEqual(calls, [{ name: 'obtener_equipos_agentes_ticketera_multi', params: {
+    p_servicio: 'VENTAS', p_desde: '2026-10-01', p_lideres: ['A'], p_tipos: ['itracker'] } }]);
+  calls = [];
+  assert.equal((await teams({ pagina: 1 })).status, 400);
+  assert.equal((await teams({ servicio: 'DEGRA' })).status, 403);
+  assert.equal((await teams({}, '0')).status, 403);
+  assert.equal(calls.length, 0);
+  for (const data of [{ equipos: [], agentes: [] }, { ...payload, equipos: [{ lider: 'A' }] }, { ...payload, agentes: null }]) {
+    result = { data, error: null };
+    assert.equal((await teams({})).status, 502);
+  }
+});

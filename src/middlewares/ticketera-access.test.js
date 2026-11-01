@@ -37,6 +37,9 @@ require.cache[databasePath] = {
       if (name === 'obtener_detalle_analitica_ticketera_multi') {
         return { data: { items: [], total: 0 }, error: null };
       }
+      if (name === 'obtener_equipos_agentes_ticketera_multi') {
+        return { data: { total: {}, equipos: [], agentes: [] }, error: null };
+      }
       if (name === 'exportar_analitica_ticketera_multi') {
         return { data: { analitica: { kpis: {}, distribuciones: {}, volumen: [] },
           columnas: ['id'], items: [], total: 0 }, error: null };
@@ -234,7 +237,7 @@ test('JWT-scoped analytics runs before the ONBOARDING-only legacy router for all
     ['DEGRA', 12, 'TICKETERA_ABONO_DEGRA']
   ]) {
     tools = [{ id_herramienta: id, nombre }];
-    for (const suffix of ['', '/detail', '/export']) {
+    for (const suffix of ['', '/detail', '/export', '/teams']) {
       const response = await request(`/tickets/analytics${suffix}`, {
         range: 2, method: 'POST', body: { servicio }
       });
@@ -556,7 +559,7 @@ test('blocks every ticketera surface before business RPCs for users without assi
     ['PATCH', '/actualizarEstadoTicketeraVentas'], ['PATCH', '/actualizarEstadoTicketeraDegra'],
     ['POST', '/subirImagenesTicketera'], ['GET', '/lideresTck'],
     ['GET', '/lideresTicketera?p_ticketera=VENTAS'], ['POST', '/tickets/analytics'],
-    ['POST', '/tickets/analytics/detail'], ['POST', '/tickets/analytics/export'],
+    ['POST', '/tickets/analytics/detail'], ['POST', '/tickets/analytics/export'], ['POST', '/tickets/analytics/teams'],
     ['GET', '/alertas-operativas?servicio=VENTAS']
   ];
   for (const [method, path] of paths) {
