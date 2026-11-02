@@ -1,10 +1,11 @@
 const express = require('express');
 const { supabase } = require('../config/database');
 const {
-  hasBackOfficeAccess, authorizeTicketSearch, defaultTicketDates, ticketPermissions, ticketMatchesSearch
+  hasBackOfficeAccess, authorizeTicketSearch, ticketPermissions, ticketMatchesSearch
 } = require('../utils/ticket-access');
 const { requireTicketeraAccess, normalizeTicketera } = require('../middlewares/ticketera-access');
 const { createTicketeraCase } = require('../services/ticketera-create.service');
+const { validateDegraClassification } = require('../utils/degra-classification');
 const router = express.Router();
 const ALLOWED_STATUSES = new Set([
   'En gestión',
@@ -69,6 +70,8 @@ function normalizeTicket(ticket) {
       : '';
   const missingField = REQUIRED_FIELDS.find((field) => !normalized[field]);
   if (missingField) return { error: 'Completá todos los campos obligatorios del ticket de Degra.' };
+  const classificationError = validateDegraClassification(normalized);
+  if (classificationError) return { error: classificationError };
 
   const requiresContact = String(ticket.requiere_contacto).trim().toLocaleLowerCase('es');
   if (!['true', 'false', 'si', 'sí', 'no'].includes(requiresContact)) {
@@ -127,28 +130,24 @@ router.get('/obtenerTicketsDegra', requireDegraTool, async (req, res) => {
 
   try {
     const effectiveSearch = casoId === null ? search : String(casoId);
-    const dates = defaultTicketDates(effectiveSearch, scope);
-    const { data, error } = await supabase.rpc('obtener_tickets', {
+    const { data, error } = await supabase.rpc('obtener_tickets_ticketera', {
       p_servicio: 'DEGRA',
-      p_busqueda: effectiveSearch || 'All',
-      p_fecha_desde: dates.from,
-      p_fecha_hasta: dates.to,
-      p_lider: null
+      p_busqueda: effectiveSearch || 'All'
     });
     if (error) {
       console.error('Error al obtener tickets de Degra:', error);
       return res.status(500).json({ error: 'No se pudieron obtener los tickets de Degra.' });
     }
     if (!Array.isArray(data)) {
-      console.error('obtener_tickets no devolvió una lista para Degra.');
+      console.error('obtener_tickets_ticketera no devolvió una lista para Degra.');
       return res.status(502).json({ error: 'La respuesta de tickets de Degra no tiene el formato esperado.' });
     }
     if (data.some((ticket) => !ticket || typeof ticket !== 'object' || Array.isArray(ticket))) {
-      console.error('obtener_tickets_degra devolvió un ticket con formato inválido.');
+      console.error('obtener_tickets_ticketera devolvió un ticket con formato inválido.');
       return res.status(502).json({ error: 'La respuesta contiene tickets de Degra con formato inválido.' });
     }
     if (data.some((ticket) => normalizeTicketera(ticket.tipo_ticketera) !== 'DEGRA')) {
-      console.error('obtener_tickets devolvio casos fuera de Degra.');
+      console.error('obtener_tickets_ticketera devolvio casos fuera de Degra.');
       return res.status(502).json({ error: 'La respuesta contiene casos fuera de Degra.' });
     }
 
@@ -224,10 +223,10 @@ router.patch('/actualizarEstadoTicketeraDegra', requireDegraTool, async (req, re
   try {
     const { data: caso, error: caseError } = await supabase.schema('tickets_soporte')
       .from('ticketera_casos')
-      .select('id')
+      .select('id, tipo_reg')
       .eq('id', casoId)
-      .eq('tipo_reg', 'TICKET')
       .eq('tipo_ticketera', 4)
+      .in('tipo_reg', ['TICKET', 'ITRACKER'])
       .maybeSingle();
     if (caseError) throw caseError;
     if (!caso) return res.status(404).json({ error: 'El caso no existe o no pertenece a la ticketera de Degra.' });

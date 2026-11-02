@@ -19,6 +19,7 @@ let signedPaths;
 const query = {
   select() { return this; },
   eq() { return this; },
+  in() { return this; },
   maybeSingle: async () => ({ data: caseType ? { tipo_ticketera: caseType } : null, error: caseError })
 };
 require.cache[databasePath] = {
@@ -31,6 +32,7 @@ require.cache[databasePath] = {
       if (name === 'actualizar_estado_ticketera') return { data: createResult, error: createError };
       if (name === 'actualizar_ticket_ventas') return { data: createResult, error: createError };
       if (name === 'obtener_tickets') return { data: listResult, error: null };
+      if (name === 'obtener_tickets_ticketera') return { data: listResult, error: null };
       if (name === 'obtener_analitica_ticketera_multi') {
         return { data: { servicio: params.p_servicio, kpis: {}, distribuciones: {}, volumen: [] }, error: null };
       }
@@ -145,6 +147,34 @@ test('creates an IT case through the shared RPC with the authenticated creator e
   });
 });
 
+test('creates an Onboarding TICKY as an ITracker even if its service is sent as ONBOARDING', async () => {
+  tools = [{ id_herramienta: 10, nombre: 'TICKETERA_ONBOARDING' }];
+  const response = await request('/crearTicketera', {
+    method: 'POST',
+    body: {
+      servicio: 'ONBOARDING',
+      ticket: {
+        tipo: 'TICKY',
+        motivo: 'Reclamo IT',
+        email: 'forged@example.com'
+      }
+    }
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(calls.find(({ name }) => name === 'crear_ticket_ticketera'), {
+    name: 'crear_ticket_ticketera',
+    params: {
+      p_servicio: 'IT',
+      p_ticket: {
+        tipo: 'TICKY',
+        motivo: 'Reclamo IT',
+        email: 'real@example.com'
+      }
+    }
+  });
+});
+
 test('saves the Ventas IT number through the state RPC', async () => {
   tools = [{ id_herramienta: 11, nombre: 'TICKETERA_VENTAS' }];
   caseType = 2;
@@ -186,6 +216,65 @@ test('passes the selected leader to the unified ticket listing RPC', async () =>
       p_fecha_hasta: '2026-10-29',
       p_lider: 'Equipo Ventas'
     }
+  });
+
+  test('lists Degra tickets and ITrackers through obtener_tickets_ticketera', async () => {
+    tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+    listResult = [{
+      id: 23, tipo_reg: 'ITRACKER', tipo_ticketera: 4, fecha_creacion: '2026-10-28T10:00:00Z',
+      lider: 'Equipo Degra', estado_actual: 'Reportado',
+      degra: { tipo_reclamo_circuito: 'ITRACKER', numero_it: 'IT-2026-456' },
+      imagenes: [], observaciones: []
+    }];
+    const response = await request('/obtenerTickets?servicio=DEGRA&p_busqueda=ITRACKER');
+
+    assert.equal(response.status, 200);
+    const [ticket] = await response.json();
+    assert.equal(ticket.tipo_reg, 'ITRACKER');
+    assert.equal(ticket.degra.numero_it, 'IT-2026-456');
+    assert.deepEqual(calls.find(({ name }) => name === 'obtener_tickets_ticketera'), {
+      name: 'obtener_tickets_ticketera',
+      params: { p_servicio: 'DEGRA', p_busqueda: 'ITRACKER' }
+    });
+    assert.equal(calls.some(({ name }) => name === 'obtener_tickets'), false);
+  });
+
+  test('reloads a Degra ITracker case from obtener_tickets_ticketera after management', async () => {
+    tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+    listResult = [{
+      id: 23, tipo_reg: 'ITRACKER', tipo_ticketera: 4, degra: { tipo_reclamo_circuito: 'ITRACKER' },
+      imagenes: [], observaciones: []
+    }];
+    const response = await request('/obtenerTicketsDegra?p_busqueda=All&caso_id=23');
+
+    assert.equal(response.status, 200);
+    assert.equal((await response.json())[0].tipo_reg, 'ITRACKER');
+    assert.deepEqual(calls.find(({ name }) => name === 'obtener_tickets_ticketera'), {
+      name: 'obtener_tickets_ticketera',
+      params: { p_servicio: 'DEGRA', p_busqueda: '23' }
+    });
+  });
+
+  test('updates Degra ITrackers through the existing state RPC', async () => {
+    tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+    caseType = 4;
+    const response = await request('/actualizarEstadoTicketeraDegra', {
+      method: 'PATCH',
+      range: 5,
+      body: { caso_id: 23, estado: 'Resuelto', observacion: 'Seguimiento de ITracker' }
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls.find(({ name }) => name === 'actualizar_estado_ticketera'), {
+      name: 'actualizar_estado_ticketera',
+      params: {
+        p_caso_id: 23,
+        p_estado: 'Resuelto',
+        p_observacion: 'Seguimiento de ITracker',
+        p_email: 'real@example.com',
+        p_numero_it: null
+      }
+    });
   });
 });
 
@@ -353,7 +442,8 @@ test('agents cannot list with default, general filters, wildcard or All on any l
     assert.equal((await request(path + '&scope=mine')).status, 200, path);
   }
   assert.equal((await request('/tickets?status=pendiente')).status, 403);
-  assert.ok(calls.every(({ name }) => name === 'obtener_tickets'));
+  assert.ok(calls.every(({ name }) => ['obtener_tickets', 'obtener_tickets_ticketera'].includes(name)));
+  assert.ok(calls.some(({ name }) => name === 'obtener_tickets_ticketera'));
 });
 
 test('leader and superior default listings are scoped to one month and the selected ticketera', async () => {

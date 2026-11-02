@@ -13,6 +13,7 @@ const {
 } = require('../middlewares/ticketera-access');
 const { createTicketeraCase } = require('../services/ticketera-create.service');
 const { optimizeImage, ImageValidationError } = require('../utils/optimize-image');
+const { validateDegraClassification } = require('../utils/degra-classification');
 
 router.use(['/crearTicketeraTicket', '/crearIT', '/actualizarEstadoTicketera', '/lideresTck'],
   requireTicketeraAccess('ONBOARDING'));
@@ -113,6 +114,8 @@ function validateCreatePayload(service, ticket) {
     }
   }
   if (service === 'DEGRA') {
+    const classificationError = validateDegraClassification(ticket);
+    if (classificationError) return classificationError;
     const contactRequired = String(ticket.requiere_contacto).trim().toLocaleLowerCase('es');
     if (!['true', 'false', 'si', 'sí', 'no'].includes(contactRequired)) {
       return 'El campo requiere_contacto debe ser Sí o No.';
