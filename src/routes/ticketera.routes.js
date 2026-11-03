@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { supabase } = require('../config/database');
 const {
-  hasBackOfficeAccess, authorizeTicketSearch, defaultTicketDates, ticketPermissions, ticketMatchesSearch
+  hasBackOfficeAccess, authorizeTicketSearch, defaultTicketDates, ticketPermissions, ticketMatchesSearch, roleCode
 } = require('../utils/ticket-access');
 const {
   requireTicketeraAccess,
@@ -65,6 +65,72 @@ const ESTADOS_TICKETERA_VENTAS = new Set([
   'Derivación incorrecta'
 ]);
 const LIDERES_TICKETERAS = new Set(['VENTAS', 'ONBOARDING', 'ABONO/DEGRA']);
+
+router.delete('/ticketera/:id_tck', async (req, res) => {
+  if (roleCode(req.user?.rol).toLocaleUpperCase('es') !== 'DESARROLLADOR') {
+    return res.status(403).json({ error: 'Solo un Desarrollador puede eliminar tickets.' });
+  }
+
+  const idTck = typeof req.params.id_tck === 'string' ? req.params.id_tck.trim() : '';
+  if (!idTck) {
+    return res.status(400).json({ error: 'Debés indicar un número de ticket.' });
+  }
+
+  try {
+    const { data: caso, error: errorCaso } = await supabase
+      .schema('tickets_soporte')
+      .from('ticketera_casos')
+      .select('id, id_tck')
+      .eq('id_tck', idTck)
+      .maybeSingle();
+
+    if (errorCaso) throw errorCaso;
+    if (!caso) {
+      return res.status(404).json({ success: false, message: 'No se encontró el ticket.' });
+    }
+
+    const { data: imagenes, error: errorImagenes } = await supabase
+      .schema('tickets_soporte')
+      .from('ticketera_imagenes')
+      .select('ruta_archivo')
+      .eq('caso_id', caso.id);
+
+    if (errorImagenes) throw errorImagenes;
+    if (!Array.isArray(imagenes)) {
+      throw new Error('La consulta de imágenes no devolvió una lista válida.');
+    }
+
+    const folderPath = `tickets/${caso.id_tck}/`;
+    const rutas = imagenes.map((imagen) => {
+      if (typeof imagen?.ruta_archivo !== 'string'
+        || !imagen.ruta_archivo.startsWith(folderPath)
+        || !imagen.ruta_archivo.slice(folderPath.length)) {
+        throw new Error(`El ticket ${caso.id_tck} tiene una ruta de imagen inválida.`);
+      }
+      return imagen.ruta_archivo;
+    });
+
+    if (rutas.length) {
+      const { error: errorStorage } = await supabase.storage
+        .from('ticketera-imagenes')
+        .remove(rutas);
+      if (errorStorage) throw errorStorage;
+    }
+
+    const { data, error } = await supabase.rpc('eliminar_ticket_ticketera', { p_id_tck: idTck });
+    if (error) throw error;
+
+    if (!data || typeof data !== 'object' || Array.isArray(data) || data.success !== true) {
+      console.error('eliminar_ticket_ticketera devolvió una respuesta inválida.');
+      return res.status(502).json({ error: 'La respuesta de eliminación no tiene el formato esperado.' });
+    }
+
+    return res.json(data);
+  } catch (error) {
+    console.error('Error al eliminar ticketera y sus imágenes:', error);
+    return res.status(500).json({ error: 'No se pudo eliminar el ticket.' });
+  }
+});
 
 function validateCreatePayload(service, ticket) {
   const salesRequired = [

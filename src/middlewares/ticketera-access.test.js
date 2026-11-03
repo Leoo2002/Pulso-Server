@@ -16,21 +16,57 @@ let createResult;
 let createError;
 let listResult;
 let signedPaths;
+let deleteResult;
+let deleteError;
+let deleteCase;
+let deleteCaseError;
+let ticketImages;
+let ticketImagesError;
+let storageRemoveError;
+let storageRemoveCalls;
+let deleteOrder;
 const query = {
   select() { return this; },
   eq() { return this; },
   in() { return this; },
   maybeSingle: async () => ({ data: caseType ? { tipo_ticketera: caseType } : null, error: caseError })
 };
+const deleteCaseQuery = {
+  columns: '',
+  select(columns) { this.columns = columns; return this; },
+  eq() { return this; },
+  in() { return this; },
+  async maybeSingle() {
+    return this.columns === 'tipo_ticketera'
+      ? { data: caseType ? { tipo_ticketera: caseType } : null, error: caseError }
+      : { data: deleteCase, error: deleteCaseError };
+  },
+  then(resolve, reject) {
+    const data = this.columns === 'tipo_ticketera'
+      ? (caseType ? { tipo_ticketera: caseType } : null)
+      : deleteCase;
+    const error = this.columns === 'tipo_ticketera' ? caseError : deleteCaseError;
+    return Promise.resolve({ data, error }).then(resolve, reject);
+  }
+};
+const ticketImagesQuery = {
+  select() { return this; },
+  eq() { return this; },
+  then(resolve, reject) {
+    return Promise.resolve({ data: ticketImages, error: ticketImagesError }).then(resolve, reject);
+  }
+};
 require.cache[databasePath] = {
   id: databasePath, filename: databasePath, loaded: true,
   exports: { supabase: {
     rpc: async (name, params) => {
       calls.push({ name, params });
+      if (name === 'eliminar_ticket_ticketera') deleteOrder.push('rpc');
       if (name === 'obtener_herramientas_usuario') return { data: tools, error: toolsError };
       if (name === 'crear_ticket_ticketera') return { data: createResult, error: createError };
       if (name === 'actualizar_estado_ticketera') return { data: createResult, error: createError };
       if (name === 'actualizar_ticket_ventas') return { data: createResult, error: createError };
+      if (name === 'eliminar_ticket_ticketera') return { data: deleteResult, error: deleteError };
       if (name === 'obtener_tickets') return { data: listResult, error: null };
       if (name === 'obtener_tickets_ticketera') return { data: listResult, error: null };
       if (name === 'obtener_analitica_ticketera_multi') {
@@ -51,11 +87,20 @@ require.cache[databasePath] = {
       }, error: null };
       throw new Error(`Unexpected business RPC: ${name}`);
     },
-    schema: () => ({ from: () => query }),
-    storage: { from: () => ({ createSignedUrl: async (path) => {
-      signedPaths.push(path);
-      return { data: { signedUrl: `https://signed.example/${path}` }, error: null };
-    } }) }
+    schema: () => ({ from: (table) => table === 'ticketera_casos'
+      ? deleteCaseQuery
+      : table === 'ticketera_imagenes' ? ticketImagesQuery : query }),
+    storage: { from: () => ({
+      createSignedUrl: async (path) => {
+        signedPaths.push(path);
+        return { data: { signedUrl: `https://signed.example/${path}` }, error: null };
+      },
+      remove: async (paths) => {
+        storageRemoveCalls.push(paths);
+        deleteOrder.push('storage');
+        return { data: paths.map((name) => ({ name })), error: storageRemoveError };
+      }
+    }) }
   } }
 };
 const { requireTicketeraAccess, sendTicketeraAccess, sendTicketeraPolicy, normalizeTicketera } = require('./ticketera-access');
@@ -107,6 +152,15 @@ beforeEach(() => {
   createError = null;
   listResult = [];
   signedPaths = [];
+  deleteResult = { success: true, message: 'Ticket eliminado correctamente.', id_tck: 'TKT-24', caso_id: 24 };
+  deleteError = null;
+  deleteCase = { id: 24, id_tck: 'TKT-24' };
+  deleteCaseError = null;
+  ticketImages = [];
+  ticketImagesError = null;
+  storageRemoveError = null;
+  storageRemoveCalls = [];
+  deleteOrder = [];
 });
 
 test('maps numeric service IDs to ticketera access names', () => {
@@ -305,9 +359,9 @@ test('saves the Degra IT number through the state RPC', async () => {
   });
 });
 
-function request(path, { range = 0, email = 'real@example.com', method = 'GET', body, token, form } = {}) {
+function request(path, { range = 0, email = 'real@example.com', role = 'Perfil', method = 'GET', body, token, form } = {}) {
   const session = token ?? jwt.sign({
-    email, rango: range, herramientas: tools, segmento: ['VENTAS MOVIL'], usuario: 'U123456', rol: 'Perfil'
+    email, rango: range, herramientas: tools, segmento: ['VENTAS MOVIL'], usuario: 'U123456', rol: role
   }, process.env.JWT_SECRET, { expiresIn: '5m' });
   return fetch(`${base}${path}`, {
     method,
@@ -318,6 +372,57 @@ function request(path, { range = 0, email = 'real@example.com', method = 'GET', 
     body: form || (body ? JSON.stringify(body) : undefined)
   });
 }
+
+test('only Developers can delete tickets through the shared deletion RPC', async () => {
+  ticketImages = [{ ruta_archivo: 'tickets/TKT-24/TKT-24-1.png' }];
+  const response = await request('/ticketera/TKT-24', {
+    method: 'DELETE',
+    role: 'DESARROLLADOR',
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), deleteResult);
+  assert.deepEqual(storageRemoveCalls, [['tickets/TKT-24/TKT-24-1.png']]);
+  assert.deepEqual(deleteOrder, ['storage', 'rpc']);
+  assert.deepEqual(calls, [{
+    name: 'eliminar_ticket_ticketera',
+    params: { p_id_tck: 'TKT-24' }
+  }]);
+});
+
+test('rejects other roles and invalid ticket identifiers without calling the deletion RPC', async () => {
+  for (const role of ['Perfil', 'BACK OFFICE', '']) {
+    const denied = await request('/ticketera/TKT-24', {
+      method: 'DELETE',
+      role,
+      range: role === 'BACK OFFICE' ? 5 : 1
+    });
+    assert.equal(denied.status, 403);
+  }
+
+  const invalid = await request('/ticketera/%20', {
+    method: 'DELETE',
+    role: 'DESARROLLADOR',
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(storageRemoveCalls, []);
+});
+
+test('does not delete ticket records when listing or removing image files fails', async () => {
+  ticketImagesError = { message: 'No se pudieron consultar las imágenes.' };
+  let response = await request('/ticketera/TKT-24', { method: 'DELETE', role: 'DESARROLLADOR' });
+  assert.equal(response.status, 500);
+  assert.equal(calls.length, 0);
+
+  ticketImagesError = null;
+  ticketImages = [{ ruta_archivo: 'tickets/TKT-24/TKT-24-1.png' }];
+  storageRemoveError = { message: 'No se pudieron eliminar las imágenes.' };
+  response = await request('/ticketera/TKT-24', { method: 'DELETE', role: 'DESARROLLADOR' });
+  assert.equal(response.status, 500);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(deleteOrder, ['storage']);
+});
 
 test('JWT-scoped analytics runs before the ONBOARDING-only legacy router for all services', async () => {
   for (const [servicio, id, nombre] of [
