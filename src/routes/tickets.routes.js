@@ -606,13 +606,17 @@ router.get('/obtenerTickets', async (req, res) => {
 
   try {
     const dates = defaultTicketDates(search, scope, dateFrom, dateTo);
-    const { data, error } = await supabase.rpc('obtener_tickets', {
-      p_servicio: ticketera,
-      p_busqueda: search || 'All',
-      p_fecha_desde: dates.from,
-      p_fecha_hasta: dates.to,
-      p_lider: leader || null
-    });
+    const listingRpc = ticketera === 'DEGRA' ? 'obtener_tickets_ticketera' : 'obtener_tickets';
+    const listingParams = ticketera === 'DEGRA'
+      ? { p_servicio: ticketera, p_busqueda: search || 'All' }
+      : {
+        p_servicio: ticketera,
+        p_busqueda: search || 'All',
+        p_fecha_desde: dates.from,
+        p_fecha_hasta: dates.to,
+        p_lider: leader || null
+      };
+    const { data, error } = await supabase.rpc(listingRpc, listingParams);
     if (error) {
       console.error('Error al obtener tickets:', error);
       return res.status(500).json({
@@ -621,16 +625,16 @@ router.get('/obtenerTickets', async (req, res) => {
     }
 
     if (!Array.isArray(data)) {
-      console.error('La función obtener_tickets no devolvió una lista.');
+      console.error(`La función ${listingRpc} no devolvió una lista.`);
       return res.status(502).json({ error: 'La respuesta de tickets no tiene el formato esperado.' });
     }
 
     if (data.some((ticket) => !ticket || typeof ticket !== 'object' || Array.isArray(ticket))) {
-      console.error('obtener_tickets devolvió un ticket con formato inválido.');
+      console.error(`${listingRpc} devolvió un ticket con formato inválido.`);
       return res.status(502).json({ error: 'La respuesta contiene tickets con formato inválido.' });
     }
     if (data.some((ticket) => normalizeTicketera(ticket.tipo_ticketera) !== ticketera)) {
-      console.error('obtener_tickets devolvio casos de otra ticketera.');
+      console.error(`${listingRpc} devolvio casos de otra ticketera.`);
       return res.status(502).json({ error: 'La respuesta contiene casos fuera de la ticketera solicitada.' });
     }
 
@@ -639,6 +643,13 @@ router.get('/obtenerTickets', async (req, res) => {
     const filteredTickets = data.filter((ticket) => {
       if (requiresConcreteMatch && !ticketMatchesSearch(ticket, search)) return false;
       if (userEmail && String(ticket.email || '').trim().toLowerCase() !== userEmail) return false;
+      if (ticketera === 'DEGRA') {
+        const createdAt = String(ticket.fecha_creacion || ticket.created_at || '').slice(0, 10);
+        const ticketLeader = String(ticket.lider || '').trim();
+        if (dates.from && (!createdAt || createdAt < dates.from)) return false;
+        if (dates.to && (!createdAt || createdAt > dates.to)) return false;
+        if (leader && ticketLeader !== leader) return false;
+      }
       const rawType = String(ticket.tipo_reg || ticket.type || ticket.tipo || '').trim().toLowerCase();
       const ticketType = rawType === 'it' ? 'itracker' : rawType;
       if (type && ticketType !== type) return false;

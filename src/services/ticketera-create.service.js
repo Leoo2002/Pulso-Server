@@ -1,9 +1,21 @@
 const { supabase } = require('../config/database');
 
 async function createTicketeraCase(service, ticket, email) {
+  const rpcTicket = { ...ticket, email };
+  const normalizedService = service.trim().toUpperCase();
+  const trackerType = typeof ticket.tipo === 'string' ? ticket.tipo.trim().toUpperCase() : '';
+  const rpcService = normalizedService === 'ONBOARDING'
+    && ['ETRACKER', 'TICKY', 'ITRACKER'].includes(trackerType)
+    ? 'IT'
+    : service;
+
+  if (normalizedService === 'DEGRA') {
+    rpcTicket.tipo_reg = ticket.tipo_reclamo_circuito;
+  }
+
   const { data, error } = await supabase.rpc('crear_ticket_ticketera', {
-    p_servicio: service,
-    p_ticket: { ...ticket, email }
+    p_servicio: rpcService,
+    p_ticket: rpcTicket
   });
   if (error) throw error;
 

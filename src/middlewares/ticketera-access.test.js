@@ -16,21 +16,59 @@ let createResult;
 let createError;
 let listResult;
 let signedPaths;
+let deleteResult;
+let deleteError;
+let deleteCase;
+let deleteCaseError;
+let ticketImages;
+let ticketImagesError;
+let storageRemoveError;
+let storageRemoveCalls;
+let deleteOrder;
 const query = {
   select() { return this; },
   eq() { return this; },
+  in() { return this; },
   maybeSingle: async () => ({ data: caseType ? { tipo_ticketera: caseType } : null, error: caseError })
+};
+const deleteCaseQuery = {
+  columns: '',
+  select(columns) { this.columns = columns; return this; },
+  eq() { return this; },
+  in() { return this; },
+  async maybeSingle() {
+    return this.columns === 'tipo_ticketera'
+      ? { data: caseType ? { tipo_ticketera: caseType } : null, error: caseError }
+      : { data: deleteCase, error: deleteCaseError };
+  },
+  then(resolve, reject) {
+    const data = this.columns === 'tipo_ticketera'
+      ? (caseType ? { tipo_ticketera: caseType } : null)
+      : deleteCase;
+    const error = this.columns === 'tipo_ticketera' ? caseError : deleteCaseError;
+    return Promise.resolve({ data, error }).then(resolve, reject);
+  }
+};
+const ticketImagesQuery = {
+  select() { return this; },
+  eq() { return this; },
+  then(resolve, reject) {
+    return Promise.resolve({ data: ticketImages, error: ticketImagesError }).then(resolve, reject);
+  }
 };
 require.cache[databasePath] = {
   id: databasePath, filename: databasePath, loaded: true,
   exports: { supabase: {
     rpc: async (name, params) => {
       calls.push({ name, params });
+      if (name === 'eliminar_ticket_ticketera') deleteOrder.push('rpc');
       if (name === 'obtener_herramientas_usuario') return { data: tools, error: toolsError };
       if (name === 'crear_ticket_ticketera') return { data: createResult, error: createError };
       if (name === 'actualizar_estado_ticketera') return { data: createResult, error: createError };
       if (name === 'actualizar_ticket_ventas') return { data: createResult, error: createError };
+      if (name === 'eliminar_ticket_ticketera') return { data: deleteResult, error: deleteError };
       if (name === 'obtener_tickets') return { data: listResult, error: null };
+      if (name === 'obtener_tickets_ticketera') return { data: listResult, error: null };
       if (name === 'obtener_analitica_ticketera_multi') {
         return { data: { servicio: params.p_servicio, kpis: {}, distribuciones: {}, volumen: [] }, error: null };
       }
@@ -49,11 +87,20 @@ require.cache[databasePath] = {
       }, error: null };
       throw new Error(`Unexpected business RPC: ${name}`);
     },
-    schema: () => ({ from: () => query }),
-    storage: { from: () => ({ createSignedUrl: async (path) => {
-      signedPaths.push(path);
-      return { data: { signedUrl: `https://signed.example/${path}` }, error: null };
-    } }) }
+    schema: () => ({ from: (table) => table === 'ticketera_casos'
+      ? deleteCaseQuery
+      : table === 'ticketera_imagenes' ? ticketImagesQuery : query }),
+    storage: { from: () => ({
+      createSignedUrl: async (path) => {
+        signedPaths.push(path);
+        return { data: { signedUrl: `https://signed.example/${path}` }, error: null };
+      },
+      remove: async (paths) => {
+        storageRemoveCalls.push(paths);
+        deleteOrder.push('storage');
+        return { data: paths.map((name) => ({ name })), error: storageRemoveError };
+      }
+    }) }
   } }
 };
 const { requireTicketeraAccess, sendTicketeraAccess, sendTicketeraPolicy, normalizeTicketera } = require('./ticketera-access');
@@ -105,6 +152,15 @@ beforeEach(() => {
   createError = null;
   listResult = [];
   signedPaths = [];
+  deleteResult = { success: true, message: 'Ticket eliminado correctamente.', id_tck: 'TKT-24', caso_id: 24 };
+  deleteError = null;
+  deleteCase = { id: 24, id_tck: 'TKT-24' };
+  deleteCaseError = null;
+  ticketImages = [];
+  ticketImagesError = null;
+  storageRemoveError = null;
+  storageRemoveCalls = [];
+  deleteOrder = [];
 });
 
 test('maps numeric service IDs to ticketera access names', () => {
@@ -140,6 +196,34 @@ test('creates an IT case through the shared RPC with the authenticated creator e
         tipo: 'eTracker',
         motivo: 'App',
         numero_gestion: 'IT-123'
+      }
+    }
+  });
+});
+
+test('creates an Onboarding TICKY as an ITracker even if its service is sent as ONBOARDING', async () => {
+  tools = [{ id_herramienta: 10, nombre: 'TICKETERA_ONBOARDING' }];
+  const response = await request('/crearTicketera', {
+    method: 'POST',
+    body: {
+      servicio: 'ONBOARDING',
+      ticket: {
+        tipo: 'TICKY',
+        motivo: 'Reclamo IT',
+        email: 'forged@example.com'
+      }
+    }
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(calls.find(({ name }) => name === 'crear_ticket_ticketera'), {
+    name: 'crear_ticket_ticketera',
+    params: {
+      p_servicio: 'IT',
+      p_ticket: {
+        tipo: 'TICKY',
+        motivo: 'Reclamo IT',
+        email: 'real@example.com'
       }
     }
   });
@@ -187,6 +271,65 @@ test('passes the selected leader to the unified ticket listing RPC', async () =>
       p_lider: 'Equipo Ventas'
     }
   });
+
+  test('lists Degra tickets and ITrackers through obtener_tickets_ticketera', async () => {
+    tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+    listResult = [{
+      id: 23, tipo_reg: 'ITRACKER', tipo_ticketera: 4, fecha_creacion: '2026-10-28T10:00:00Z',
+      lider: 'Equipo Degra', estado_actual: 'Reportado',
+      degra: { tipo_reclamo_circuito: 'ITRACKER', numero_it: 'IT-2026-456' },
+      imagenes: [], observaciones: []
+    }];
+    const response = await request('/obtenerTickets?servicio=DEGRA&p_busqueda=ITRACKER');
+
+    assert.equal(response.status, 200);
+    const [ticket] = await response.json();
+    assert.equal(ticket.tipo_reg, 'ITRACKER');
+    assert.equal(ticket.degra.numero_it, 'IT-2026-456');
+    assert.deepEqual(calls.find(({ name }) => name === 'obtener_tickets_ticketera'), {
+      name: 'obtener_tickets_ticketera',
+      params: { p_servicio: 'DEGRA', p_busqueda: 'ITRACKER' }
+    });
+    assert.equal(calls.some(({ name }) => name === 'obtener_tickets'), false);
+  });
+
+  test('reloads a Degra ITracker case from obtener_tickets_ticketera after management', async () => {
+    tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+    listResult = [{
+      id: 23, tipo_reg: 'ITRACKER', tipo_ticketera: 4, degra: { tipo_reclamo_circuito: 'ITRACKER' },
+      imagenes: [], observaciones: []
+    }];
+    const response = await request('/obtenerTicketsDegra?p_busqueda=All&caso_id=23');
+
+    assert.equal(response.status, 200);
+    assert.equal((await response.json())[0].tipo_reg, 'ITRACKER');
+    assert.deepEqual(calls.find(({ name }) => name === 'obtener_tickets_ticketera'), {
+      name: 'obtener_tickets_ticketera',
+      params: { p_servicio: 'DEGRA', p_busqueda: '23' }
+    });
+  });
+
+  test('updates Degra ITrackers through the existing state RPC', async () => {
+    tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+    caseType = 4;
+    const response = await request('/actualizarEstadoTicketeraDegra', {
+      method: 'PATCH',
+      range: 5,
+      body: { caso_id: 23, estado: 'Resuelto', observacion: 'Seguimiento de ITracker' }
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls.find(({ name }) => name === 'actualizar_estado_ticketera'), {
+      name: 'actualizar_estado_ticketera',
+      params: {
+        p_caso_id: 23,
+        p_estado: 'Resuelto',
+        p_observacion: 'Seguimiento de ITracker',
+        p_email: 'real@example.com',
+        p_numero_it: null
+      }
+    });
+  });
 });
 
 test('saves the Degra IT number through the state RPC', async () => {
@@ -216,9 +359,9 @@ test('saves the Degra IT number through the state RPC', async () => {
   });
 });
 
-function request(path, { range = 0, email = 'real@example.com', method = 'GET', body, token, form } = {}) {
+function request(path, { range = 0, email = 'real@example.com', role = 'Perfil', method = 'GET', body, token, form } = {}) {
   const session = token ?? jwt.sign({
-    email, rango: range, herramientas: tools, segmento: ['VENTAS MOVIL'], usuario: 'U123456', rol: 'Perfil'
+    email, rango: range, herramientas: tools, segmento: ['VENTAS MOVIL'], usuario: 'U123456', rol: role
   }, process.env.JWT_SECRET, { expiresIn: '5m' });
   return fetch(`${base}${path}`, {
     method,
@@ -229,6 +372,57 @@ function request(path, { range = 0, email = 'real@example.com', method = 'GET', 
     body: form || (body ? JSON.stringify(body) : undefined)
   });
 }
+
+test('only Developers can delete tickets through the shared deletion RPC', async () => {
+  ticketImages = [{ ruta_archivo: 'tickets/TKT-24/TKT-24-1.png' }];
+  const response = await request('/ticketera/TKT-24', {
+    method: 'DELETE',
+    role: 'DESARROLLADOR',
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), deleteResult);
+  assert.deepEqual(storageRemoveCalls, [['tickets/TKT-24/TKT-24-1.png']]);
+  assert.deepEqual(deleteOrder, ['storage', 'rpc']);
+  assert.deepEqual(calls, [{
+    name: 'eliminar_ticket_ticketera',
+    params: { p_id_tck: 'TKT-24' }
+  }]);
+});
+
+test('rejects other roles and invalid ticket identifiers without calling the deletion RPC', async () => {
+  for (const role of ['Perfil', 'BACK OFFICE', '']) {
+    const denied = await request('/ticketera/TKT-24', {
+      method: 'DELETE',
+      role,
+      range: role === 'BACK OFFICE' ? 5 : 1
+    });
+    assert.equal(denied.status, 403);
+  }
+
+  const invalid = await request('/ticketera/%20', {
+    method: 'DELETE',
+    role: 'DESARROLLADOR',
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(storageRemoveCalls, []);
+});
+
+test('does not delete ticket records when listing or removing image files fails', async () => {
+  ticketImagesError = { message: 'No se pudieron consultar las imágenes.' };
+  let response = await request('/ticketera/TKT-24', { method: 'DELETE', role: 'DESARROLLADOR' });
+  assert.equal(response.status, 500);
+  assert.equal(calls.length, 0);
+
+  ticketImagesError = null;
+  ticketImages = [{ ruta_archivo: 'tickets/TKT-24/TKT-24-1.png' }];
+  storageRemoveError = { message: 'No se pudieron eliminar las imágenes.' };
+  response = await request('/ticketera/TKT-24', { method: 'DELETE', role: 'DESARROLLADOR' });
+  assert.equal(response.status, 500);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(deleteOrder, ['storage']);
+});
 
 test('JWT-scoped analytics runs before the ONBOARDING-only legacy router for all services', async () => {
   for (const [servicio, id, nombre] of [
@@ -353,7 +547,8 @@ test('agents cannot list with default, general filters, wildcard or All on any l
     assert.equal((await request(path + '&scope=mine')).status, 200, path);
   }
   assert.equal((await request('/tickets?status=pendiente')).status, 403);
-  assert.ok(calls.every(({ name }) => name === 'obtener_tickets'));
+  assert.ok(calls.every(({ name }) => ['obtener_tickets', 'obtener_tickets_ticketera'].includes(name)));
+  assert.ok(calls.some(({ name }) => name === 'obtener_tickets_ticketera'));
 });
 
 test('leader and superior default listings are scoped to one month and the selected ticketera', async () => {
