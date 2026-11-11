@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const jwt = require("jsonwebtoken");
+const { tokenErrorType } = require('../middlewares/auth-error-type');
 const { verifyGoogleToken } = require('../services/auth.service');
 const { supabase } = require('../config/database');
 const { requireTicketeraAccess } = require('../middlewares/ticketera-access');
@@ -113,13 +114,15 @@ router.get("/recargar-storage", (req, res) => {
   const token = req.cookies['login-jwt'];
 
   if (!token) {
+    res.locals.securityErrorType = 'token_missing';
     return res.status(401).json({ error: "No hay token" });
   }
 
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) {
       console.error("❌ Error al verificar el token:", err.message);
-      return res.status(403).json({ error: "Token no válido o expirado" });
+      res.locals.securityErrorType = tokenErrorType(err);
+      return res.status(401).json({ error: "Token no válido o expirado" });
     }
 
     console.log("✅ Token válido, devolviendo payload para recargar sessionStorage");

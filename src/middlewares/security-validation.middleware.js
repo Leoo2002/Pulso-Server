@@ -246,7 +246,15 @@ const logSecurityEvents = (req, res, next) => {
     res.json = function(data) {
       if (res.statusCode >= 400 && data.error) {
         const timestamp = new Date();
-        const errorType = _detectErrorType(data.error);
+        const errorType = res.locals.securityErrorType || _detectErrorType(data.error);
+        const route = (req.originalUrl || req.url).split('?')[0];
+
+        if (errorType === 'token_missing' && res.statusCode === 401 &&
+            req.method === 'GET' && route === '/auth/recargar-storage') {
+          console.info(`[INFO] Sesion no disponible: ${req.method} ${route} (${res.statusCode}, token_missing)`);
+          return originalJson.call(this, data);
+        }
+
         const severity = _calculateSeverity(errorType, res.statusCode);
 
         // Extraer datos del usuario desde el JWT decodificado
@@ -287,7 +295,7 @@ const logSecurityEvents = (req, res, next) => {
 ║  🔴 ATAQUE/ERROR
 ║  ├─ Tipo: ${errorType.toUpperCase()} [${severity}]
 ║  ├─ Método HTTP: ${req.method}
-║  ├─ Ruta: ${req.path}
+║  ├─ Ruta: ${route}
 ║  ├─ Status Code: ${res.statusCode}
 ║  ├─ Mensaje Error: ${data.error}
 ║  └─ Detalles: ${data.details || 'N/A'}
@@ -307,7 +315,7 @@ const logSecurityEvents = (req, res, next) => {
           errorType,
           severity,
           method: req.method,
-          route: req.path,
+          route,
           status: res.statusCode,
           user_id:       userId       || 'No autenticado',
           user_email:    userEmail    || 'No autenticado',
@@ -339,7 +347,7 @@ const logSecurityEvents = (req, res, next) => {
 const _detectErrorType = (errorMessage) => {
   const msg = errorMessage?.toLowerCase() || '';
 
-  if (msg.includes('token') || msg.includes('jwt') || msg.includes('expirado') || msg.includes('expired')) return 'token_expired';
+  if (msg.includes('token') || msg.includes('jwt')) return 'token_error';
   if (msg.includes('script') || msg.includes('html') || msg.includes('xss')) return 'xss';
   if (msg.includes('sql') || msg.includes('injection') || msg.includes('drop') || msg.includes('select')) return 'sql_injection';
   if (msg.includes('email')) return 'email_injection';
@@ -370,7 +378,7 @@ const _alertCooldowns = new Map();
 const ALERT_COOLDOWN_MS = (parseInt(process.env.ALERT_COOLDOWN_MINUTES) || 5) * 60 * 1000;
 
 // Tipos de error que NO generan email (comportamiento normal, no ataques)
-const _NO_EMAIL_TYPES = new Set(['token_expired']);
+const _NO_EMAIL_TYPES = new Set(['token_missing', 'token_invalid', 'token_expired', 'token_error']);
 
 // Transporter reutilizable (se crea una sola vez)
 let _mailerTransporter = null;

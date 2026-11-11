@@ -1,5 +1,6 @@
 // Middleware de autenticación JWT
 const jwt = require("jsonwebtoken");
+const { tokenErrorType } = require('./auth-error-type');
 require("dotenv").config();
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -16,13 +17,15 @@ function authMiddleware(rolesPermitidos = []) {
     console.log("🔑 Verificando token");
 
     if (!token) {
+      res.locals.securityErrorType = 'token_missing';
       return res.status(401).json({ error: "No autorizado: token faltante" });
     }
 
     jwt.verify(token, JWT_SECRET, (err, decoded) => {
       if (err) {
         console.warn("❌ Token inválido o expirado:", err.message);
-        return res.status(403).json({ error: "Token inválido o expirado" });
+        res.locals.securityErrorType = tokenErrorType(err);
+        return res.status(401).json({ error: "Token inválido o expirado" });
       }
 
       const rango = decoded.rango === null || decoded.rango === undefined || String(decoded.rango).trim() === ''

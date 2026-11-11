@@ -1,5 +1,33 @@
 # Server
 
+## Registros de autenticacion
+
+Los errores de JWT se clasifican segun la validacion real: `token_missing`
+(cookie ausente), `token_expired` (JWT vencido) y `token_invalid` (JWT
+invalido). Los errores genericos que mencionan tokens se registran como
+`token_error`, sin asumir que estan vencidos. Se mantiene la politica anterior
+de no enviar correos para errores de token.
+
+Un GET a `/auth/recargar-storage` sin cookie registra una linea informativa;
+otros errores siguen generando el evento de seguridad detallado. Las rutas se
+registran completas, sin el query string. La ausencia de cookie no permite
+determinar si el usuario cerro sesion o si el navegador dejo de enviarla.
+
+Las rutas protegidas responden 401 para JWT ausente, invalido o vencido, y 403
+para una sesion valida sin permisos. Las rutas publicas se registran fuera del
+middleware JWT; no hay excepciones basadas en rutas relativas. El frontend
+guarda la ruta solicitada, la valida antes de regresar despues del login y
+ofrece reintento si falla la comprobacion por red o por el servicio.
+Actualmente el retorno seguro admite las rutas activas `/logok/inicio` y
+`/logok/tickets`, con sus parametros; al habilitar otras vistas protegidas
+se debe actualizar la lista en `Pulso/src/app/guards/return-url.ts`.
+Desplegar backend y frontend juntos: clientes que interpreten 403 como sesion
+vencida deben actualizarse para reconocer 401.
+
+```powershell
+node --test .\src\middlewares\security-validation.middleware.test.js .\src\routes\auth.routes.test.js
+```
+
 ## Datos de nomina en el JWT
 
 El login con Google consulta `obtener_datos_usuario_nomina` con
