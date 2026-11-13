@@ -17,7 +17,8 @@ const MOTIVES_BY_CLAIM_TYPE = {
       'Solicitud de NCL por cuota de equipo / Servicio',
       'Ajuste comercial (Pos-Bajas / Downselling)',
       'Promoción / Descuento no cargado',
-      'Error en tarifa de abonados'
+      'Error en tarifa de abonados',
+      'campaña gestores'
     ],
     'Clientes Posbaja & Fidelización': [
       'Posbaja con compromiso de pago',
