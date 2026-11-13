@@ -10,6 +10,14 @@ test('allows an operational Degra ticket with a matching submotive', () => {
   }), '');
 });
 
+test('allows Campaña gestores under the NCL motive for Degra tickets', () => {
+  assert.equal(validateDegraClassification({
+    tipo_reclamo_circuito: 'TICKET',
+    motivo_principal: 'Ajustes y Notas de Crédito (NCL)',
+    submotivo: 'campaña gestores'
+  }), '');
+});
+
 test('allows a Degra ITracker with an ITracker submotive', () => {
   assert.equal(validateDegraClassification({
     tipo_reclamo_circuito: 'ITRACKER',
