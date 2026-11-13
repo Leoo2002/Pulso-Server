@@ -14,12 +14,79 @@ const {
 const { createTicketeraCase } = require('../services/ticketera-create.service');
 const { optimizeImage, ImageValidationError } = require('../utils/optimize-image');
 const { validateDegraClassification } = require('../utils/degra-classification');
+const { streamStorageObject } = require('../utils/stream-storage-object');
 
 router.use(['/crearTicketeraTicket', '/crearIT', '/actualizarEstadoTicketera', '/lideresTck'],
   requireTicketeraAccess('ONBOARDING'));
 router.use(['/crearTicketeraTicketVentas', '/obtenerTicketsVentas', '/actualizarEstadoTicketeraVentas'],
   requireTicketeraAccess('VENTAS'));
-router.use(['/crearTicketera', '/subirImagenesTicketera', '/lideresTicketera'], requireTicketeraAccess());
+router.use(['/crearTicketera', '/subirImagenesTicketera', '/lideresTicketera', '/ticketera/imagenes'],
+  requireTicketeraAccess());
+
+router.get('/ticketera/imagenes/:ticketera/:casoId/:index', async (req, res) => {
+  const ticketera = normalizeTicketera(req.params.ticketera);
+  const casoId = Number(req.params.casoId);
+  const index = Number(req.params.index);
+  if (!['ONBOARDING', 'VENTAS', 'DEGRA'].includes(ticketera)) {
+    return res.status(400).json({ error: 'La ticketera solicitada no es válida.' });
+  }
+  if (!hasTicketeraAccess(req, ticketera)) {
+    return res.status(403).json({ error: 'No tienes permisos para acceder a esta ticketera.' });
+  }
+  if (!Number.isSafeInteger(casoId) || casoId <= 0
+    || !Number.isSafeInteger(index) || index < 0 || index > 4) {
+    return res.status(400).json({ error: 'El caso o la imagen solicitada no son válidos.' });
+  }
+  if (!authorizeTicketSearch(req, res, String(casoId))) return;
+
+  try {
+    const isDegra = ticketera === 'DEGRA';
+    const { data, error } = await supabase.rpc(
+      isDegra ? 'obtener_tickets_ticketera' : 'obtener_tickets',
+      isDegra
+        ? { p_servicio: ticketera, p_busqueda: String(casoId) }
+        : {
+          p_servicio: ticketera,
+          p_busqueda: String(casoId),
+          p_fecha_desde: null,
+          p_fecha_hasta: null,
+          p_lider: null
+        }
+    );
+    if (error) throw error;
+    if (!Array.isArray(data)) {
+      throw new Error('La consulta de autorización de imagen no devolvió una lista.');
+    }
+
+    const ticket = data.find((item) => item && typeof item === 'object'
+      && !Array.isArray(item)
+      && String(item.id ?? item.caso_id) === String(casoId)
+      && normalizeTicketera(item.tipo_ticketera) === ticketera
+      && (ticketPermissions(req.user).list || ticketMatchesSearch(item, String(casoId))));
+    if (!ticket) return res.status(404).json({ error: 'No se encontró la imagen solicitada.' });
+
+    const image = Array.isArray(ticket.imagenes) ? ticket.imagenes[index] : null;
+    if (!image || typeof image.ruta_archivo !== 'string' || !image.ruta_archivo) {
+      return res.status(404).json({ error: 'No se encontró la imagen solicitada.' });
+    }
+
+    await streamStorageObject({
+      supabase,
+      bucket: 'ticketera-imagenes',
+      path: image.ruta_archivo,
+      res,
+      contentType: image.tipo_mime
+    });
+  } catch (error) {
+    console.error('Error al servir la imagen de Ticketera:', error);
+    if (res.headersSent) return res.destroy(error);
+    res.status(error.status || 500).json({
+      error: error.status === 404
+        ? 'No se encontró la imagen solicitada.'
+        : 'No se pudo cargar la imagen.'
+    });
+  }
+});
 
 const multer = require('multer');
 const path = require('path');
@@ -413,19 +480,12 @@ router.get('/obtenerTicketsVentas', async (req, res) => {
       if (!ticket || typeof ticket !== 'object' || Array.isArray(ticket)) {
         throw new Error(`El registro de Ventas ${index + 1} no tiene el formato esperado.`);
       }
-      const imagenes = await Promise.all((Array.isArray(ticket.imagenes) ? ticket.imagenes : []).map(async (image) => {
+      const imagenes = (Array.isArray(ticket.imagenes) ? ticket.imagenes : []).map((image) => {
         if (!image || typeof image !== 'object' || Array.isArray(image)) {
           throw new Error(`Una imagen del ticket ${ticket.id} no tiene el formato esperado.`);
         }
-        const { data: urlData, error: urlError } = await supabase.storage
-          .from('ticketera-imagenes')
-          .createSignedUrl(image.ruta_archivo, 3600);
-        if (urlError) {
-          console.error(`Error al generar URL de imagen ${image.id} del ticket de Ventas:`, urlError);
-          return { ...image, url: null };
-        }
-        return { ...image, url: urlData.signedUrl };
-      }));
+        return image;
+      });
       return {
         ...ticket,
         tipo_reg: ticket.tipo_reg || 'TICKET',

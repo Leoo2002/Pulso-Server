@@ -13,9 +13,11 @@ let removedFiles = [];
 let storageRemoveError = null;
 let deletionScope;
 let deletionScopeError = null;
+let signedImageRequests = [];
 beforeEach(() => {
   deletionScope = undefined;
   deletionScopeError = null;
+  signedImageRequests = [];
 });
 const storage = {
   from: () => ({
@@ -23,10 +25,13 @@ const storage = {
       uploadedFiles.push({ filePath, buffer, size: buffer.length, options });
       return { error: null };
     },
-    createSignedUrl: async (filePath, expiresIn) => ({
-      data: { signedUrl: `https://signed.example/${filePath}?expires=${expiresIn}` },
-      error: null
-    }),
+    createSignedUrl: async (filePath, expiresIn) => {
+      signedImageRequests.push({ filePath, expiresIn });
+      return {
+        data: { signedUrl: `https://signed.example/${filePath}?expires=${expiresIn}` },
+        error: null
+      };
+    },
     remove: async (paths) => {
       removedFiles.push(...paths);
       return { error: storageRemoveError };
@@ -46,6 +51,7 @@ require.cache[databasePath] = {
   filename: databasePath,
   loaded: true,
   exports: {
+    SUPABASE_URL: 'https://project.supabase.co',
     supabase: {
       rpc,
       schema: (name) => ({
@@ -91,6 +97,10 @@ async function get(service = 'VENTAS') {
   return fetch(`${base}/alertas-operativas?servicio=${encodeURIComponent(service)}`);
 }
 
+async function getAlertImage(id, service = 'VENTAS') {
+  return fetch(`${base}/alertas-operativas/${encodeURIComponent(String(id))}/imagen?servicio=${encodeURIComponent(service)}`);
+}
+
 async function post(body, range = 5, image = null) {
   const form = new FormData();
   for (const [field, value] of Object.entries(body)) {
@@ -130,13 +140,56 @@ test('lists alerts for the selected service through the provided RPC', async () 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), [{
     ...alerts[0],
-    imagen_url: 'https://signed.example/alertas-operativas/ventas/aviso.png?expires=3600'
+    imagen_url: null,
+    tiene_imagen: true
   }]);
   assert.deepEqual(calls.at(-1), {
     name: 'obtener_alertas_operativas',
     params: { p_servicio: 'VENTAS', p_tipo_severidad: null }
   });
   assert.equal(uploadedFiles.length, 0);
+  assert.deepEqual(signedImageRequests, []);
+});
+
+test('streams alert images through the API only for the selected assigned service', async () => {
+  tools = [{ nombre: 'TICKETERA_VENTAS' }];
+  rpcResult = { data: [{
+    id: 17,
+    titulo_aviso: 'Aviso',
+    tipo_severidad: 'Alta',
+    comentario: 'Detalle',
+    servicio: 'VENTAS',
+    servicios: ['VENTAS'],
+    imagen_url: 'alertas-operativas/ventas/aviso.webp',
+    fecha_creacion: '2026-10-27T12:00:00Z'
+  }], error: null };
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    if (String(input).startsWith(base)) return originalFetch(input, init);
+    assert.equal(String(input), 'https://signed.example/alertas-operativas/ventas/aviso.webp?expires=60');
+    return new Response(Buffer.from('alert image'), {
+      status: 200,
+      headers: { 'Content-Type': 'image/webp' }
+    });
+  };
+  try {
+    const response = await originalFetch(`${base}/alertas-operativas/17/imagen?servicio=VENTAS`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/webp');
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    assert.equal(await response.text(), 'alert image');
+    assert.deepEqual(signedImageRequests, [{
+      filePath: 'alertas-operativas/ventas/aviso.webp',
+      expiresIn: 60
+    }]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  tools = [{ nombre: 'TICKETERA_ONBOARDING' }];
+  signedImageRequests = [];
+  assert.equal((await getAlertImage(17, 'ONBOARDING')).status, 404);
+  assert.equal(signedImageRequests.length, 0);
 });
 
 test('requires permission for the selected ticketera before accessing alerts', async () => {
@@ -189,7 +242,8 @@ test('creates a validated alert only for management profiles', async () => {
   assert.equal(response.status, 201);
   assert.deepEqual(await response.json(), {
     ...rpcResult.data,
-    imagen_url: `https://signed.example/${uploadedFiles[0].filePath}?expires=3600`
+    imagen_url: null,
+    tiene_imagen: true
   });
 
   assert.equal(uploadedFiles.length, 1);

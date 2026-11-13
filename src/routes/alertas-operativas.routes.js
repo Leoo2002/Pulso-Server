@@ -1,10 +1,11 @@
 const express = require('express');
 const multer = require('multer');
 const { randomUUID } = require('crypto');
-const { supabase } = require('../config/database');
+const { supabase, SUPABASE_URL } = require('../config/database');
 const { ticketPermissions } = require('../utils/ticket-access');
 const { loadTicketeraAccess } = require('../middlewares/ticketera-access');
 const { optimizeImage, ImageValidationError } = require('../utils/optimize-image');
+const { streamStorageObject } = require('../utils/stream-storage-object');
 
 const router = express.Router();
 const IMAGE_BUCKET = 'ticketera-imagenes';
@@ -139,24 +140,23 @@ function isAlertRecord(alert) {
     && typeof alert.fecha_creacion === 'string';
 }
 
-async function getDisplayImageUrl(imagePath) {
-  if (!imagePath) return null;
-  if (/^https?:\/\//i.test(imagePath)) return imagePath;
-  const { data, error } = await supabase.storage
-    .from(IMAGE_BUCKET)
-    .createSignedUrl(imagePath, 3600);
-  if (error) throw error;
-  if (typeof data?.signedUrl !== 'string' || !data.signedUrl) {
-    throw new Error('No se pudo generar el enlace temporal de la imagen.');
-  }
-  return data.signedUrl;
-}
+function getStoredImagePath(imageUrl) {
+  if (typeof imageUrl !== 'string' || !imageUrl) return null;
+  if (!/^https?:\/\//i.test(imageUrl)) return imageUrl;
+  if (typeof SUPABASE_URL !== 'string' || !SUPABASE_URL) return null;
 
-async function withDisplayImageUrl(alert) {
-  return {
-    ...alert,
-    imagen_url: await getDisplayImageUrl(alert.imagen_url)
-  };
+  try {
+    const url = new URL(imageUrl);
+    if (url.origin !== new URL(SUPABASE_URL).origin) return null;
+    const prefixes = [
+      `/storage/v1/object/sign/${IMAGE_BUCKET}/`,
+      `/storage/v1/object/public/${IMAGE_BUCKET}/`
+    ];
+    const prefix = prefixes.find((value) => url.pathname.startsWith(value));
+    return prefix ? decodeURIComponent(url.pathname.slice(prefix.length)) : null;
+  } catch {
+    return null;
+  }
 }
 
 router.get('/alertas-operativas', requireServiceAccess, async (req, res) => {
@@ -188,11 +188,69 @@ router.get('/alertas-operativas', requireServiceAccess, async (req, res) => {
       console.error('obtener_alertas_operativas devolvio alertas fuera de la ticketera solicitada.');
       return res.status(502).json({ error: 'La respuesta contiene alertas fuera de la ticketera solicitada.' });
     }
-    const alerts = await Promise.all(data.map(withDisplayImageUrl));
+    const alerts = data.map((alert) => ({
+      ...alert,
+      imagen_url: null,
+      tiene_imagen: Boolean(alert.imagen_url)
+    }));
     return res.json(alerts);
   } catch (error) {
     console.error('Error inesperado al obtener alertas operativas:', error);
     return res.status(500).json({ error: 'Error interno del servidor.' });
+  }
+});
+
+router.get('/alertas-operativas/:id/imagen', requireServiceAccess, async (req, res) => {
+  const alertId = Number(req.params.id);
+  if (!Number.isSafeInteger(alertId) || alertId <= 0) {
+    return res.status(400).json({ error: 'El ID de la alerta debe ser un número válido.' });
+  }
+
+  try {
+    const { data: alerts, error } = await supabase.rpc('obtener_alertas_operativas', {
+      p_servicio: req.operationalAlertService,
+      p_tipo_severidad: null
+    });
+    if (error) throw error;
+    if (!Array.isArray(alerts) || alerts.some((alert) => !isAlertRecord(alert))) {
+      return res.status(502).json({ error: 'No se pudo verificar la alerta solicitada.' });
+    }
+
+    const alert = alerts.find((item) => String(item.id) === String(alertId));
+    const services = Array.isArray(alert?.servicios) ? alert.servicios : alert ? [alert.servicio] : [];
+    const belongsToService = services.some((service) => typeof service === 'string'
+      && (SERVICE_ALIASES[service.trim().toUpperCase()] || service.trim().toUpperCase())
+        === req.operationalAlertService);
+    if (!alert || !belongsToService) {
+      return res.status(404).json({ error: 'No se encontró la imagen solicitada.' });
+    }
+
+    const imagePath = getStoredImagePath(alert.imagen_url);
+    const serviceImagePrefix = `alertas-operativas/${req.operationalAlertService.toLocaleLowerCase('es')}/`;
+    if (!imagePath || !imagePath.startsWith(serviceImagePrefix)) {
+      return res.status(404).json({ error: 'No se encontró la imagen solicitada.' });
+    }
+    const contentType = Object.entries(IMAGE_EXTENSIONS)
+      .find(([, extension]) => imagePath.toLowerCase().endsWith(extension))?.[0];
+    if (!contentType) {
+      return res.status(415).json({ error: 'El tipo de imagen almacenada no es válido.' });
+    }
+
+    await streamStorageObject({
+      supabase,
+      bucket: IMAGE_BUCKET,
+      path: imagePath,
+      res,
+      contentType
+    });
+  } catch (error) {
+    console.error('Error al servir la imagen de alerta operativa:', error);
+    if (res.headersSent) return res.destroy(error);
+    res.status(error.status || 500).json({
+      error: error.status === 404
+        ? 'No se encontró la imagen solicitada.'
+        : 'No se pudo cargar la imagen de la alerta.'
+    });
   }
 });
 
@@ -209,7 +267,6 @@ router.post('/alertas-operativas', receiveAlertImage, requireServiceAccess, asyn
     const imagePath = image
       ? `alertas-operativas/${req.operationalAlertServices[0].toLocaleLowerCase('es')}/${randomUUID()}${image.extension}`
       : null;
-    let displayImageUrl = null;
     if (image && imagePath) {
       const { error: uploadError } = await supabase.storage
         .from(IMAGE_BUCKET)
@@ -219,7 +276,6 @@ router.post('/alertas-operativas', receiveAlertImage, requireServiceAccess, asyn
         });
       if (uploadError) throw uploadError;
       uploadedImagePath = imagePath;
-      displayImageUrl = await getDisplayImageUrl(imagePath);
     }
 
     const { data, error } = await supabase.rpc('crear_alerta_operativa_multi', {
@@ -244,7 +300,11 @@ router.post('/alertas-operativas', receiveAlertImage, requireServiceAccess, asyn
       return res.status(502).json({ error: 'La alerta se creó, pero la respuesta no tiene el formato esperado.' });
     }
     uploadedImagePath = null;
-    return res.status(201).json({ ...alert, imagen_url: displayImageUrl });
+    return res.status(201).json({
+      ...alert,
+      imagen_url: null,
+      tiene_imagen: Boolean(imagePath)
+    });
   } catch (error) {
     if (error instanceof ImageValidationError) {
       return res.status(400).json({ error: error.message });

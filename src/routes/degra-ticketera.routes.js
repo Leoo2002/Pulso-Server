@@ -161,31 +161,23 @@ router.get('/obtenerTicketsDegra', requireDegraTool, async (req, res) => {
     }
     if (casoId !== null) tickets = tickets.filter((ticket) => Number(ticket.id) === casoId);
 
-    const ticketsWithImageUrls = await Promise.all(tickets.map(async (ticket) => {
+    const ticketsWithImages = tickets.map((ticket) => {
       const images = Array.isArray(ticket.imagenes) ? ticket.imagenes : [];
-      const signedImages = await Promise.all(images.map(async (image) => {
+      images.forEach((image) => {
         if (!image || typeof image !== 'object' || Array.isArray(image)) {
           throw new Error(`Una imagen del ticket ${ticket.id} no tiene el formato esperado.`);
         }
-        const { data: urlData, error: urlError } = await supabase.storage
-          .from('ticketera-imagenes')
-          .createSignedUrl(image.ruta_archivo, 3600);
-        if (urlError) {
-          console.error(`Error al generar URL de imagen ${image.id} del ticket de Degra:`, urlError);
-          return { ...image, url: null };
-        }
-        return { ...image, url: urlData.signedUrl };
-      }));
+      });
       return {
         ...ticket,
         tipo_reg: ticket.tipo_reg || 'TICKET',
         tipo_ticketera: 4,
         observaciones: Array.isArray(ticket.observaciones) ? ticket.observaciones : [],
-        imagenes: signedImages
+        imagenes: images
       };
-    }));
+    });
 
-    return res.json(ticketsWithImageUrls);
+    return res.json(ticketsWithImages);
   } catch (error) {
     console.error('Error inesperado al obtener tickets de Degra:', error);
     return res.status(500).json({ error: 'Error interno del servidor.' });

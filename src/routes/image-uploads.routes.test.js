@@ -13,10 +13,17 @@ let failInsert;
 let failCleanup;
 let caseType;
 let caseReg;
+let listedTickets;
+let signedPaths;
 const client = {
   rpc: async (name) => {
-    assert.equal(name, 'crear_ticket_ticketera');
-    return { data: { caso_id: 1, id_tck: 'TEST-1' }, error: null };
+    if (name === 'crear_ticket_ticketera') {
+      return { data: { caso_id: 1, id_tck: 'TEST-1' }, error: null };
+    }
+    if (['obtener_tickets', 'obtener_tickets_ticketera'].includes(name)) {
+      return { data: listedTickets, error: null };
+    }
+    throw new Error(`Unexpected RPC ${name}`);
   },
   schema() { return this; },
   from(table) {
@@ -50,6 +57,10 @@ const client = {
         upload: async (path, buffer, options) => {
           uploads.push({ bucket, path, buffer, options });
           return { error: null };
+        },
+        createSignedUrl: async (path, expiresIn) => {
+          signedPaths.push({ bucket, path, expiresIn });
+          return { data: { signedUrl: `https://signed.example/${path}` }, error: null };
         },
         remove: async (paths) => { removed.push(...paths); return { error: null }; }
       };
@@ -96,6 +107,8 @@ beforeEach(() => {
   failCleanup = false;
   caseType = 3;
   caseReg = 'TICKET';
+  listedTickets = [];
+  signedPaths = [];
 });
 
 async function post(route, images = [image]) {
@@ -185,6 +198,46 @@ test('no profile can add or modify images after creation', async () => {
   assert.equal(response.status, 403);
   assert.equal(uploads.length, 0);
   assert.equal(inserts.length, 0);
+});
+
+test('Ticketera image proxy streams the authorized image through the API', async () => {
+  listedTickets = [{
+    id: 1,
+    tipo_ticketera: 3,
+    imagenes: [{
+      ruta_archivo: 'tickets/TEST-1/TEST-1-1.webp',
+      tipo_mime: 'image/webp'
+    }]
+  }];
+  const originalFetch = global.fetch;
+  global.fetch = async (input, init) => {
+    if (String(input).startsWith(base)) return originalFetch(input, init);
+    assert.equal(String(input), 'https://signed.example/tickets/TEST-1/TEST-1-1.webp');
+    return new Response(Buffer.from('image bytes'), {
+      status: 200,
+      headers: { 'Content-Type': 'image/webp' }
+    });
+  };
+  try {
+    const response = await originalFetch(`${base}/ticketera/imagenes/ONBOARDING/1/0`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/webp');
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    assert.equal(await response.text(), 'image bytes');
+    assert.deepEqual(signedPaths, [{
+      bucket: 'ticketera-imagenes',
+      path: 'tickets/TEST-1/TEST-1-1.webp',
+      expiresIn: 60
+    }]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('Ticketera image proxy denies access to a service not assigned to the user', async () => {
+  const response = await fetch(`${base}/ticketera/imagenes/DEGRA/1/0`);
+  assert.equal(response.status, 403);
+  assert.equal(signedPaths.length, 0);
 });
 
 test('failed cleanup still returns the created case and attempts Storage cleanup', async () => {

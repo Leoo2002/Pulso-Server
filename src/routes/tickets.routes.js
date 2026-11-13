@@ -8,6 +8,7 @@ const {
 } = require('../utils/ticket-access');
 const { requireTicketeraAccess, hasTicketeraAccess, normalizeTicketera } = require('../middlewares/ticketera-access');
 const { optimizeImage, ImageValidationError } = require('../utils/optimize-image');
+const { streamStorageObject } = require('../utils/stream-storage-object');
 
 const router = express.Router();
 const BUCKET = 'pulso-ticket-attachments';
@@ -142,16 +143,6 @@ function toClientTicket(ticket, includeDetails = false) {
     result.attachments = ticket.attachments;
   }
   return result;
-}
-
-async function signAttachments(attachments) {
-  return Promise.all((attachments || []).map(async (attachment) => {
-    const { data, error } = await supabase.storage
-      .from(BUCKET)
-      .createSignedUrl(attachment.path, 300);
-    if (error) throw error;
-    return { ...attachment, url: data.signedUrl };
-  }));
 }
 
 router.use('/tickets', requireTicketAccess, requireTicketeraAccess('ONBOARDING'));
@@ -297,20 +288,21 @@ router.get('/tickets/:id/attachments/:index/download', async (req, res) => {
     const attachment = ticket.attachments?.[index];
     if (!attachment) return res.status(404).json({ error: 'No se encontró la imagen solicitada.' });
 
-    const { data: file, error: downloadError } = await supabase.storage.from(BUCKET).download(attachment.path);
-    if (downloadError) throw downloadError;
-
-    const buffer = Buffer.from(await file.arrayBuffer());
-    res.set({
-      'Content-Type': attachment.contentType,
-      'Content-Length': String(buffer.length),
-      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(attachment.name)}`,
-      'X-Content-Type-Options': 'nosniff'
+    await streamStorageObject({
+      supabase,
+      bucket: BUCKET,
+      path: attachment.path,
+      res,
+      contentType: attachment.contentType,
+      disposition: 'attachment',
+      filename: attachment.name
     });
-    res.send(buffer);
   } catch (error) {
     console.error('Error al descargar la imagen del ticket:', error);
-    res.status(500).json({ error: 'No se pudo descargar la imagen.' });
+    if (res.headersSent) return res.destroy(error);
+    res.status(error.status || 500).json({ error: error.status === 404
+      ? 'No se encontró la imagen solicitada.'
+      : 'No se pudo descargar la imagen.' });
   }
 });
 
@@ -328,7 +320,7 @@ router.get('/tickets/:id', async (req, res) => {
       if (error.code === 'PGRST116') return res.status(404).json({ error: 'No se encontró el ticket solicitado.' });
       throw error;
     }
-    const attachments = await signAttachments(data.attachments);
+    const attachments = data.attachments || [];
     res.json(toClientTicket({ ...data, attachments }, true));
   } catch (error) {
     console.error('Error al obtener el detalle del ticket:', error);
@@ -667,33 +659,17 @@ router.get('/obtenerTickets', async (req, res) => {
       return true;
     });
 
-    const ticketsWithImageUrls = await Promise.all(filteredTickets.map(async (ticket) => {
-      const images = Array.isArray(ticket.imagenes) ? ticket.imagenes : [];
-      const signedImages = await Promise.all(images.map(async (image) => {
-        if (!image || typeof image !== 'object' || Array.isArray(image)) {
-          throw new Error(`Una imagen del ticket ${ticket.id} no tiene el formato esperado.`);
-        }
-        const { data: urlData, error: urlError } = await supabase.storage
-          .from('ticketera-imagenes')
-          .createSignedUrl(image.ruta_archivo, 3600);
-        if (urlError) {
-          console.error(`Error al generar URL de imagen ${image.id}:`, urlError);
-          return { ...image, url: null };
-        }
-        return { ...image, url: urlData.signedUrl };
-      }));
-      return {
+    const ticketsWithImages = filteredTickets.map((ticket) => ({
         ...ticket,
         tipo_reg: ticket.tipo_reg || 'TICKET',
         tipo_ticketera: ticket.tipo_ticketera || (
           ticketera === 'VENTAS' ? 2 : ticketera === 'DEGRA' ? 4 : 3
         ),
         observaciones: Array.isArray(ticket.observaciones) ? ticket.observaciones : [],
-        imagenes: signedImages
-      };
-    }));
+        imagenes: Array.isArray(ticket.imagenes) ? ticket.imagenes : []
+      }));
 
-    return res.json(ticketsWithImageUrls);
+    return res.json(ticketsWithImages);
   } catch (error) {
     console.error('Error inesperado al obtener tickets:', error);
 
