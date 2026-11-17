@@ -213,6 +213,11 @@ function validateCreatePayload(service, ticket) {
   if (required.some((field) => typeof ticket[field] !== 'string' || !ticket[field].trim())) {
     return `Completá todos los campos obligatorios del ticket de ${service}.`;
   }
+  if (service === 'DEGRA'
+    && ['telefono_contacto', 'email_cliente', 'dni_cliente', 'numero_cuenta']
+      .some((field) => typeof ticket[field] !== 'string' || !ticket[field].trim())) {
+    return 'Completá el teléfono, mail, DNI y número de cuenta del cliente para Abono/Degra.';
+  }
   const maxLengths = service === 'VENTAS'
     ? {
       usuario_teco: 80, nombre: 150, lider: 150, canal: 120, tipo_venta: 120,
@@ -222,7 +227,7 @@ function validateCreatePayload(service, ticket) {
     : service === 'DEGRA'
       ? {
         canal: 120, usuario: 80, nombre: 150, lider: 150, site_ubicacion: 150,
-        especialidad: 150, telefono_contacto: 30, email_cliente: 254,
+        especialidad: 150, telefono_contacto: 30, email_cliente: 254, dni_cliente: 12, numero_cuenta: 80,
         tipo_reclamo_circuito: 150, motivo_principal: 150, submotivo: 150,
         numero_caso: 80, linea_msisdn: 40, detalle_observacion: 5000
       }
@@ -258,6 +263,10 @@ function validateCreatePayload(service, ticket) {
     }
     if (ticket.email_cliente && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ticket.email_cliente.trim())) {
       return 'Revisá el formato del mail de contacto.';
+    }
+    if (!/^[0-9]{6,12}$/.test(ticket.dni_cliente.trim())
+      || !/^[+0-9() -]{7,30}$/.test(ticket.telefono_contacto.trim())) {
+      return 'Revisá el formato de los datos del cliente para Abono/Degra.';
     }
   }
   return '';

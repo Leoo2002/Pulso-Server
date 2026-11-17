@@ -23,6 +23,8 @@ const MAX_LENGTHS = {
   especialidad: 150,
   telefono_contacto: 30,
   email_cliente: 254,
+  dni_cliente: 12,
+  numero_cuenta: 80,
   tipo_reclamo_circuito: 150,
   motivo_principal: 150,
   submotivo: 150,
@@ -70,6 +72,10 @@ function normalizeTicket(ticket) {
       : '';
   const missingField = REQUIRED_FIELDS.find((field) => !normalized[field]);
   if (missingField) return { error: 'Completá todos los campos obligatorios del ticket de Degra.' };
+  if (['telefono_contacto', 'email_cliente', 'dni_cliente', 'numero_cuenta']
+    .some((field) => !normalized[field])) {
+    return { error: 'Completá el teléfono, mail, DNI y número de cuenta del cliente para Abono/Degra.' };
+  }
   const classificationError = validateDegraClassification(normalized);
   if (classificationError) return { error: classificationError };
 
@@ -84,6 +90,9 @@ function normalizeTicket(ticket) {
   }
   if (normalized.email_cliente && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized.email_cliente)) {
     return { error: 'Revisá el formato del mail de contacto.' };
+  }
+  if (!/^[0-9]{6,12}$/.test(normalized.dni_cliente)) {
+    return { error: 'Ingresá un DNI válido de 6 a 12 dígitos para Abono/Degra.' };
   }
   return { ticket: normalized };
 }
