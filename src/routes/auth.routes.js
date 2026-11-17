@@ -247,7 +247,7 @@ router.get("/validar-acceso", (req, res, next) => {
   }
 
   // Validar por rol
-  authMiddleware(soloDesarrolladores ? [0] : rolesPermitidos)(req, res, next);
+  authMiddleware(soloDesarrolladores ? [1] : rolesPermitidos)(req, res, next);
 }, (req, res) => {
   res.status(200).json({ ok: true });
 });
