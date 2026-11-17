@@ -220,6 +220,9 @@ router.get("/validar-acceso", (req, res, next) => {
     });
   }
 
+  const soloDesarrolladores =
+    (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true') && view !== 'inicio';
+
   // Obtener el correo del token JWT directamente si req.user no está definido
   let correo = req.user?.email;
   
@@ -238,13 +241,13 @@ router.get("/validar-acceso", (req, res, next) => {
   }
 
   // Verificar si el correo tiene acceso especial a esta vista
-  if (correo && ACCESOS_EXTRA[view]?.includes(correo)) {
+  if (!soloDesarrolladores && correo && ACCESOS_EXTRA[view]?.includes(correo)) {
     console.log(`✅ Acceso permitido a ${view} para correo especial: ${correo}`);
     return res.status(200).json({ ok: true });
   }
 
   // Validar por rol
-  authMiddleware(rolesPermitidos)(req, res, next);
+  authMiddleware(soloDesarrolladores ? [0] : rolesPermitidos)(req, res, next);
 }, (req, res) => {
   res.status(200).json({ ok: true });
 });
