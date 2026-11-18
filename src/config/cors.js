@@ -3,6 +3,7 @@ const corsOptions = {
   origin: [
     process.env.FRONTEND_URL,
     'https://pulso-arg.netlify.app',
+    'https://pulso-arg.vercel.app',
     'http://localhost:4200',
     'http://localhost:3000'
   ],  

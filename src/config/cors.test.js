@@ -18,6 +18,7 @@ test('CORS allows explicit origins and preflight requests without allowing other
   const url = `http://127.0.0.1:${server.address().port}/`;
   const origins = [
     'https://pulso-arg.netlify.app',
+    'https://pulso-arg.vercel.app',
     'http://localhost:4200',
     'http://localhost:3000',
     ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : [])
@@ -47,7 +48,9 @@ test('CORS allows explicit origins and preflight requests without allowing other
   for (const origin of [
     'https://untrusted.example',
     'http://pulso-arg.netlify.app',
-    'https://pulso-arg.netlify.app.untrusted.example'
+    'https://pulso-arg.netlify.app.untrusted.example',
+    'http://pulso-arg.vercel.app',
+    'https://pulso-arg.vercel.app.untrusted.example'
   ]) {
     for (const method of ['GET', 'OPTIONS']) {
       const response = await fetch(url, { method, headers: { Origin: origin } });
