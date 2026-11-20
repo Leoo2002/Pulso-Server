@@ -36,7 +36,9 @@ const ticketeraRoutes = require('./src/routes/ticketera.routes');
 const degraTicketeraRoutes = require('./src/routes/degra-ticketera.routes');
 const ticketeraAnalyticsRoutes = require('./src/routes/ticketera-analytics.routes');
 const operationalAlertsRoutes = require('./src/routes/alertas-operativas.routes');
-
+const { getCxHData } = require('./src/services/cxhSync.service');
+const { getFCRData } = require('./src/services/fcrUnificadoSync.service');
+const { getTMOData } = require('./src/services/tmoSync.service.js');
 const app = express();
 // Render termina la conexion del cliente en su proxy de entrada.
 app.set('trust proxy', process.env.RENDER === 'true' ? 1 : false);
@@ -124,3 +126,6 @@ getFechasHistoricoGuardias(app);
 getHistoricoGuardia(app);
 getGuardiasDelDia(app);
 setRegistroGuardia(app);
+getCxHData(app);
+getFCRData(app);
+getTMOData(app);
