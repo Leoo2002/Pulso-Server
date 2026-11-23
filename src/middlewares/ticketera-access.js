@@ -49,6 +49,7 @@ function requireTicketeraAccess(ticketera) {
       ? hasTicketeraAccess(req, ticketera)
       : req.ticketeraAccess.length > 0;
     if (!allowed) {
+      res.locals.securityErrorType = 'authorization_error';
       return res.status(403).json({ error: 'No tienes permisos para acceder a esta ticketera.' });
     }
     return next();

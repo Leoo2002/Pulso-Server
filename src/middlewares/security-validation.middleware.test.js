@@ -5,6 +5,9 @@ const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 
 process.env.JWT_SECRET = 'security-logging-test-secret';
+process.env.MAIL_ALERTS_ENABLED = 'false';
+process.env.SLACK_WEBHOOK_URL = '';
+process.env.DISCORD_WEBHOOK_URL = '';
 const databasePath = require.resolve('../config/database');
 const servicePath = require.resolve('../services/auth.service');
 const originalDatabase = require.cache[databasePath];
@@ -26,6 +29,7 @@ else delete require.cache[servicePath];
 const jwtValidation = require('./jwt-validation');
 const authMiddleware = require('./auth');
 const { logSecurityEvents } = require('./security-validation.middleware');
+const { requireTicketeraAccess } = require('./ticketera-access');
 
 let server;
 let base;
@@ -37,6 +41,9 @@ before(async () => {
   app.use('/auth/validar-acceso', jwtValidation);
   app.use('/auth', authRoutes);
   app.get('/api/protected', (req, res) => res.json({ ok: true }));
+  app.get('/api/ticketera/:ticketera', (req, res, next) =>
+    requireTicketeraAccess(req.params.ticketera)(req, res, next),
+  (req, res) => res.json({ ok: true }));
   app.get('/role', authMiddleware([1]), (req, res) => res.json({ ok: true }));
   app.get('/generic', (req, res) => res.status(401).json({ error: 'Error al crear el token' }));
   server = await new Promise((resolve) => {
@@ -140,6 +147,26 @@ test('generic token errors are not assumed to be expired', async () => {
   assert.equal(result.status, 401);
   assert.match(event(result), /Tipo: TOKEN_ERROR /);
 });
+
+for (const [ticketera, otherTool] of [
+  ['ONBOARDING', { id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }],
+  ['VENTAS', { id_herramienta: 10, nombre: 'TICKETERA_ONBOARDING' }],
+  ['DEGRA', { id_herramienta: 11, nombre: 'TICKETERA_VENTAS' }]
+]) {
+  test(`denied ${ticketera} access is an authorization event, not an unknown error`, async () => {
+    const token = jwt.sign({
+      sub: 'user', email: 'bo@example.com', rol: 'BO', rango: 5,
+      herramientas: [otherTool]
+    }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const result = await request(`/api/ticketera/${ticketera}`, token);
+    assert.equal(result.status, 403);
+    assert.deepEqual(result.body, { error: 'No tienes permisos para acceder a esta ticketera.' });
+    const log = event(result);
+    assert.match(log, /Tipo: AUTHORIZATION_ERROR /);
+    assert.match(log, /HIGH/);
+    assert.doesNotMatch(log, /UNKNOWN_ERROR/);
+  });
+}
 
 test('a valid cookie still restores the session and grants protected access', async () => {
   const token = jwt.sign({ sub: 'user', rango: 1 }, process.env.JWT_SECRET, { expiresIn: '1h' });
