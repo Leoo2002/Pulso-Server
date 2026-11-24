@@ -4,6 +4,7 @@ const router = express.Router();
 const { supabase, SUPABASE_URL, SUPABASE_KEY } = require('../config/database');
 const { registerMetricas } = require('../services/metricas.service');
 const { PERMISOS_VISTAS, ACCESOS_EXTRA } = require('../constants/permissions');
+const { canAccessKpis } = require('../utils/kpi-access');
 
 // Temporal: cualquier perfil con acceso a metricas puede consultar cualquier servicio/lider
 // para validar la RPC. El control por roles se agregara mas adelante.
@@ -15,7 +16,7 @@ function contextoKpi(usuario) {
   const servicios = [...new Set(segmentos.filter(s => typeof s === 'string' && s.trim())
     .map(s => s.trim()))];
   const lider = typeof usuario.lider === 'string' ? usuario.lider.trim() : '';
-  if (!PERMISOS_VISTAS.metricas.includes(rango)) return null;
+  if (!PERMISOS_VISTAS.metricas.includes(rango) || !canAccessKpis(usuario)) return null;
   return { servicios, lider: lider || null, restringido: false };
 }
 
@@ -170,6 +171,9 @@ registrarConsultaKpi('/kpis/fcr/detalle', 'consultar_fcr_detalle', 'el detalle F
 
 // Obtener métricas en formato CSV
 router.get("/metricas", async (req, res) => {
+  if (!contextoKpi(req.user)) {
+    return res.status(req.user ? 403 : 401).json({ error: 'La sesion no permite consultar KPIs.' });
+  }
   const { data, error } = await supabase.rpc('generar_csv_agentes');
 
   if (error) {

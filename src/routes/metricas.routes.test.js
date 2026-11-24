@@ -28,7 +28,8 @@ before(async () => {
     if (req.headers['x-test-range']) req.user = {
       rango: req.headers['x-test-range'],
       segmento: (req.headers['x-test-services'] || 'SOPORTE-RRSS,ONBOARDING').split(','),
-      lider: req.headers['x-test-leader'] ?? 'LIDER A'
+      lider: req.headers['x-test-leader'] ?? 'LIDER A',
+      herramientas: req.headers['x-test-no-kpi-tool'] ? [] : [{ id_herramienta: 6, nombre: 'KPI' }]
     };
     next();
   });
@@ -205,6 +206,19 @@ test('disconnecting a KPI client aborts the outstanding Supabase request', async
 });
 
 test('context suggests JWT services and leader without locking filters while roles are pending', async () => {
+  const response = await fetch(`${base}/kpis/contexto`, {
+    headers: { 'x-test-range': '0', 'x-test-no-kpi-tool': 'true' }
+  });
+  assert.equal(response.status, 403);
+
+  const allowed = await fetch(`${base}/kpis/contexto`, { headers: { 'x-test-range': '6' } });
+  assert.equal(allowed.status, 200);
+  assert.deepEqual(await allowed.json(), {
+    servicios: ['SOPORTE-RRSS', 'ONBOARDING'], lider: 'LIDER A', restringido: false
+  });
+});
+
+test('context suggests JWT services and leader when tool 6 is assigned', async () => {
   const response = await fetch(`${base}/kpis/contexto`, { headers: { 'x-test-range': '0' } });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {

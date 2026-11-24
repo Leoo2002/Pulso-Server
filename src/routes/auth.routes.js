@@ -6,6 +6,7 @@ const { tokenErrorType } = require('../middlewares/auth-error-type');
 const { verifyGoogleToken } = require('../services/auth.service');
 const { supabase } = require('../config/database');
 const { requireTicketeraAccess } = require('../middlewares/ticketera-access');
+const { canAccessKpis } = require('../utils/kpi-access');
 
 // Endpoint para login con Google
 router.post('/login', async (req, res) => {
@@ -220,8 +221,17 @@ router.get("/validar-acceso", (req, res, next) => {
     });
   }
 
-  const soloDesarrolladores =
-    (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true') && view !== 'inicio';
+  if (view === 'metricas') {
+    return authMiddleware(rolesPermitidos)(req, res, () => {
+      if (!canAccessKpis(req.user)) {
+        res.locals.securityErrorType = 'authorization_error';
+        return res.status(403).json({ error: 'No tienes permisos para consultar KPIs.' });
+      }
+      return next();
+    });
+  }
+
+  const soloDesarrolladores = view !== 'inicio';
 
   // Obtener el correo del token JWT directamente si req.user no está definido
   let correo = req.user?.email;

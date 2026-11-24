@@ -234,3 +234,31 @@ test('special access is unavailable without a configured password', async () => 
     if (saved !== undefined) process.env.U_SECRET = saved;
   }
 });
+
+test('applies production access rules in development using the signed JWT tool claim', async () => {
+  const savedNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'development';
+  try {
+    const cookieFor = user => `login-jwt=${jwt.sign(user, process.env.JWT_SECRET)}`;
+    const response = await fetch(`${base}/auth/validar-acceso?view=metricas`, {
+      headers: { Cookie: cookieFor({
+        email: 'user@example.com', rango: 6,
+        herramientas: [{ nombre: 'KPI', id_herramienta: 6 }]
+      }) }
+    });
+    assert.equal(response.status, 200, await response.text());
+
+    const denied = await fetch(`${base}/auth/validar-acceso?view=metricas`, {
+      headers: { Cookie: cookieFor({ email: 'user@example.com', rango: 6, herramientas: [] }) }
+    });
+    assert.equal(denied.status, 403);
+
+    const restricted = await fetch(`${base}/auth/validar-acceso?view=menudecambios`, {
+      headers: { Cookie: cookieFor({ email: 'user@example.com', rango: 6 }) }
+    });
+    assert.equal(restricted.status, 403);
+  } finally {
+    if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = savedNodeEnv;
+  }
+});
