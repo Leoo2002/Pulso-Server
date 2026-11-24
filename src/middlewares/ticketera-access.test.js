@@ -256,7 +256,7 @@ test('saves the Ventas IT number through the state RPC', async () => {
   });
 });
 
-test('passes the selected leader to the unified ticket listing RPC', async () => {
+test('passes the selected leader to the unified ticket listing RPC', async (t) => {
   tools = [{ id_herramienta: 11, nombre: 'TICKETERA_VENTAS' }];
   const response = await request('/obtenerTickets?servicio=VENTAS&p_busqueda=All&lider=Equipo%20Ventas&dateFrom=2026-10-01&dateTo=2026-10-29', { range: 2 });
 
@@ -272,7 +272,7 @@ test('passes the selected leader to the unified ticket listing RPC', async () =>
     }
   });
 
-  test('lists Degra tickets and ITrackers through obtener_tickets_ticketera', async () => {
+  await t.test('lists Degra tickets and ITrackers through obtener_tickets_ticketera', async () => {
     tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
     listResult = [{
       id: 23, tipo_reg: 'ITRACKER', tipo_ticketera: 4, fecha_creacion: '2026-10-28T10:00:00Z',
@@ -293,7 +293,7 @@ test('passes the selected leader to the unified ticket listing RPC', async () =>
     assert.equal(calls.some(({ name }) => name === 'obtener_tickets'), false);
   });
 
-  test('reloads a Degra ITracker case from obtener_tickets_ticketera after management', async () => {
+  await t.test('reloads a Degra ITracker case from obtener_tickets_ticketera after management', async () => {
     tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
     listResult = [{
       id: 23, tipo_reg: 'ITRACKER', tipo_ticketera: 4, degra: { tipo_reclamo_circuito: 'ITRACKER' },
@@ -309,13 +309,18 @@ test('passes the selected leader to the unified ticket listing RPC', async () =>
     });
   });
 
-  test('updates Degra ITrackers through the existing state RPC', async () => {
+  await t.test('updates Degra ITrackers through the state RPC with the contact status', async () => {
     tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
     caseType = 4;
     const response = await request('/actualizarEstadoTicketeraDegra', {
       method: 'PATCH',
       range: 5,
-      body: { caso_id: 23, estado: 'Resuelto', observacion: 'Seguimiento de ITracker' }
+      body: {
+        caso_id: 23,
+        estado: 'Resuelto',
+        observacion: 'Seguimiento de ITracker',
+        contacto: 'Sin respuesta'
+      }
     });
 
     assert.equal(response.status, 200);
@@ -326,9 +331,28 @@ test('passes the selected leader to the unified ticket listing RPC', async () =>
         p_estado: 'Resuelto',
         p_observacion: 'Seguimiento de ITracker',
         p_email: 'real@example.com',
-        p_numero_it: null
+        p_numero_it: null,
+        p_contacto: 'Sin respuesta'
       }
     });
+  });
+
+  await t.test('rejects unsupported Degra contact statuses before calling the RPC', async () => {
+    tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+    caseType = 4;
+    const response = await request('/actualizarEstadoTicketeraDegra', {
+      method: 'PATCH',
+      range: 5,
+      body: {
+        caso_id: 23,
+        estado: 'Resuelto',
+        observacion: 'Seguimiento',
+        contacto: 'Contactado'
+      }
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal(calls.some(({ name }) => name === 'actualizar_estado_ticketera'), false);
   });
 });
 
@@ -354,7 +378,8 @@ test('saves the Degra IT number through the state RPC', async () => {
       p_estado: 'Resuelto',
       p_observacion: 'Seguimiento iniciado',
       p_email: 'real@example.com',
-      p_numero_it: 'IT-2026-456'
+      p_numero_it: 'IT-2026-456',
+      p_contacto: null
     }
   });
 });

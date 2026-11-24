@@ -1,5 +1,52 @@
 # Server
 
+## Consultas de KPIs
+
+`POST /api/kpis/productividad` y `POST /api/kpis/nps` comparten validacion
+de sesion, fechas y filtros. Ejecutan `consultar_cxh` y `consultar_nps`,
+respectivamente, con los siete parametros: `servicio`, `fecha_desde`,
+`fecha_hasta`, `filtro_canal`, `filtro_empleado_id`, `filtro_legajo` y
+`filtro_lider`. Los filtros opcionales se envian como null; empleado ID y
+legajo son mutuamente excluyentes. Una fecha hasta nula solicita el mes.
+
+Se conserva temporalmente el acceso a servicios y lideres editables de
+productividad para probar las RPC; la autorizacion por roles especificos
+queda pendiente. `/api/kpis/contexto` sugiere servicio y lider del JWT.
+No se aceptan nombres de RPC enviados por el cliente.
+
+NPS conserva `periodo`, `general` y `por_lider` de Supabase y agrega
+`servicio`. Los errores de negocio responden 400, las fallas de consulta 500
+y los formatos inesperados 502. Las respuestas no se cachean por HTTP y
+usan la compresion existente. Reiniciar o redesplegar el backend para
+registrar la nueva ruta; no requiere modificar la funcion SQL compartida.
+
+Todas las consultas `POST /api/kpis/*` tienen un limite de 30 segundos:
+si se supera, abortan la peticion a Supabase, registran la RPC afectada y
+responden HTTP 504 con un error visible. Si el cliente cancela la peticion
+o abandona la pantalla, tambien se aborta la peticion a Supabase. No se
+reintenta automaticamente ni se devuelven datos vacios como si fuera un exito.
+El frontend tiene un respaldo de 35 segundos para fallas de red o de
+intermediarios. Reiniciar o redesplegar ambos para aplicar el cambio;
+no requiere migraciones. El limite evita cargas indefinidas, pero no
+reemplaza analizar el rendimiento real de las RPC en PostgreSQL.
+
+```powershell
+node --test .\src\routes\metricas.routes.test.js .\src\middlewares\compression.test.js
+```
+
+## Compresion de respuestas
+
+Express comprime respuestas de mas de 1 KB cuando el cliente anuncia soporte
+(`Accept-Encoding`, por ejemplo gzip). El navegador descomprime el contenido
+automaticamente; el JSON y las rutas no cambian. Reiniciar o redesplegar el
+backend para aplicar el middleware.
+
+Prueba local:
+
+```powershell
+node --test .\src\middlewares\compression.test.js
+```
+
 ## Registros de autenticacion
 
 Los errores de JWT se clasifican segun la validacion real: `token_missing`

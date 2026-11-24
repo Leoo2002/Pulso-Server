@@ -5,6 +5,169 @@ const { supabase, SUPABASE_URL, SUPABASE_KEY } = require('../config/database');
 const { registerMetricas } = require('../services/metricas.service');
 const { PERMISOS_VISTAS, ACCESOS_EXTRA } = require('../constants/permissions');
 
+// Temporal: cualquier perfil con acceso a metricas puede consultar cualquier servicio/lider
+// para validar la RPC. El control por roles se agregara mas adelante.
+function contextoKpi(usuario) {
+  if (!usuario) return null;
+  const rango = typeof usuario.rango === 'number' || typeof usuario.rango === 'string'
+    ? Number(String(usuario.rango).trim() || NaN) : NaN;
+  const segmentos = Array.isArray(usuario.segmento) ? usuario.segmento : [usuario.segmento];
+  const servicios = [...new Set(segmentos.filter(s => typeof s === 'string' && s.trim())
+    .map(s => s.trim()))];
+  const lider = typeof usuario.lider === 'string' ? usuario.lider.trim() : '';
+  if (!PERMISOS_VISTAS.metricas.includes(rango)) return null;
+  return { servicios, lider: lider || null, restringido: false };
+}
+
+router.get('/kpis/contexto', (req, res) => {
+  const contexto = contextoKpi(req.user);
+  if (!contexto) {
+    return res.status(req.user ? 403 : 401).json({ error: 'La sesion no permite consultar KPIs.' });
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(contexto);
+});
+
+const textoKpi = valor => typeof valor === 'string' && valor.length <= 250;
+const enteroEntre = (min, max) => valor => Number.isInteger(valor) && valor >= min && valor <= max;
+
+// extras: filtros propios de cada RPC ({ campo: validador }); se envian solo si vienen informados.
+function registrarConsultaKpi(ruta, rpc, nombre, validarRespuesta, extras = {}, nombreServicio = 'servicio') {
+  router.post(ruta, async (req, res) => {
+    const contexto = contextoKpi(req.user);
+    if (!contexto) {
+      return res.status(req.user ? 403 : 401).json({ error: 'La sesion no permite consultar KPIs.' });
+    }
+    const filtros = req.body;
+    const campos = ['servicio', 'fecha_desde', 'fecha_hasta', 'filtro_canal',
+      'filtro_empleado_id', 'filtro_legajo', 'filtro_lider', ...Object.keys(extras)];
+    const fechaValida = valor => typeof valor === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(valor)
+      && !Number.isNaN(Date.parse(valor)) && new Date(valor).toISOString().slice(0, 10) === valor;
+    if (!filtros || typeof filtros !== 'object' || Array.isArray(filtros)
+      || Object.keys(filtros).some(campo => !campos.includes(campo))
+      || typeof filtros.servicio !== 'string' || !filtros.servicio.trim()
+      || !fechaValida(filtros.fecha_desde)
+      || (filtros.fecha_hasta != null && (!fechaValida(filtros.fecha_hasta)
+        || filtros.fecha_hasta < filtros.fecha_desde))
+      || ['filtro_canal', 'filtro_legajo', 'filtro_lider'].some(campo =>
+        filtros[campo] != null && (typeof filtros[campo] !== 'string' || filtros[campo].length > 250))
+      || (filtros.filtro_empleado_id != null && (!Number.isInteger(filtros.filtro_empleado_id)
+        || filtros.filtro_empleado_id < 1 || filtros.filtro_empleado_id > 2147483647))
+      || (filtros.filtro_empleado_id != null && filtros.filtro_legajo?.trim())
+      || Object.entries(extras).some(([campo, valido]) => filtros[campo] != null && !valido(filtros[campo]))) {
+      return res.status(400).json({ error: `Los filtros de ${nombre} no son validos.` });
+    }
+    const servicio = filtros.servicio.trim();
+    const parametros = {
+      [nombreServicio]: servicio,
+      fecha_desde: filtros.fecha_desde,
+      fecha_hasta: filtros.fecha_hasta ?? null,
+      filtro_canal: filtros.filtro_canal?.trim() || null,
+      filtro_empleado_id: filtros.filtro_empleado_id ?? null,
+      filtro_legajo: filtros.filtro_legajo?.trim() || null,
+      filtro_lider: filtros.filtro_lider?.trim() || null
+    };
+    for (const campo of Object.keys(extras)) {
+      const valor = typeof filtros[campo] === 'string' ? filtros[campo].trim() || null : filtros[campo];
+      if (valor != null) parametros[campo] = valor;
+    }
+    const controlador = new AbortController();
+    const limite = setTimeout(() => {
+      console.error(`Tiempo de espera agotado en ${rpc} (30 segundos).`);
+      controlador.abort();
+      if (!res.destroyed) {
+        res.status(504).json({ error: `La consulta de ${nombre} demoró más de 30 segundos. Reintentá; si se repite, hay que revisar su rendimiento en Supabase.` });
+      }
+    }, 30000);
+    const cancelar = () => {
+      if (!res.writableEnded) {
+        clearTimeout(limite);
+        controlador.abort();
+      }
+    };
+    res.once('close', cancelar);
+    try {
+      const { data, error } = await supabase.rpc(rpc, parametros).abortSignal(controlador.signal);
+      if (controlador.signal.aborted) return;
+      if (error) {
+        console.error(`Error en ${rpc}:`, error);
+        if (error.code === 'PGRST202' && rpc.startsWith('consultar_fcr_')) {
+          return res.status(503).json({ error: 'Faltan las funciones optimizadas de FCR en Supabase. Ejecutá la migración de FCR.' });
+        }
+        return res.status(error.code === 'P0001' ? 400 : 500).json({
+          error: error.code === 'P0001' ? error.message : `No se pudo consultar ${nombre}.`
+        });
+      }
+      if (!data || typeof data !== 'object' || Array.isArray(data)
+        || !data.periodo || !validarRespuesta(data, servicio)) {
+        console.error(`Respuesta invalida de ${rpc}.`);
+        return res.status(502).json({ error: `${nombre} devolvio un formato inesperado.` });
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json(rpc === 'consultar_nps' ? { ...data, servicio: servicio.toUpperCase() } : data);
+    } catch (error) {
+      if (controlador.signal.aborted) return;
+      console.error(`Error inesperado al consultar ${nombre}:`, error);
+      return res.status(500).json({ error: `No se pudo consultar ${nombre}.` });
+    } finally {
+      clearTimeout(limite);
+      res.removeListener('close', cancelar);
+    }
+  });
+}
+
+const respuestaPorLider = data => !!data.general && Array.isArray(data.por_lider);
+
+registrarConsultaKpi('/kpis/productividad', 'consultar_cxh', 'productividad',
+  (data, servicio) => respuestaPorLider(data) && ['diaria', 'mensual'].includes(data.fuente) && data.servicio === servicio);
+registrarConsultaKpi('/kpis/nps', 'consultar_nps', 'NPS',
+  data => respuestaPorLider(data) && Number.isInteger(data.general.cantidad_encuestas)
+    && Number.isInteger(data.general.cantidad_calificadas) && Number.isFinite(data.general.nps));
+registrarConsultaKpi('/kpis/nps/detalle', 'consultar_nps_detalle', 'las encuestas NPS',
+  data => Number.isInteger(data.total) && Number.isInteger(data.pagina) && Array.isArray(data.encuestas), {
+    filtro_agente: textoKpi,
+    filtro_tipo: valor => ['PROMOTOR', 'NEUTRO', 'DETRACTOR', 'SIN_CALIFICACION'].includes(valor),
+    filtro_etiqueta_nivel: enteroEntre(1, 4),
+    filtro_etiqueta: textoKpi,
+    busqueda: textoKpi,
+    pagina: enteroEntre(1, 100000),
+    tamano_pagina: enteroEntre(1, 200)
+  });
+registrarConsultaKpi('/kpis/nps/textos', 'consultar_nps_textos', 'los comentarios NPS',
+  data => Number.isInteger(data.sin_etiqueta) && Array.isArray(data.por_nota)
+    && Array.isArray(data.por_etiqueta) && Array.isArray(data.palabras), {
+    filtro_agente: textoKpi,
+    limite_palabras: enteroEntre(1, 200)
+  });
+registrarConsultaKpi('/kpis/fcr', 'consultar_fcr_resumen', 'FCR',
+  (data, servicio) => data.servicio === servicio.toUpperCase() && respuestaPorLider(data) && Number.isInteger(data.general.cantidadRegistros)
+    && Number.isFinite(data.general.totalInteracciones) && Number.isFinite(data.general.totalRecallEfectivo),
+  {}, 'filtro_servicio');
+registrarConsultaKpi('/kpis/fcr/tabulaciones', 'consultar_fcr_tabulaciones', 'las tabulaciones FCR',
+  (data, servicio) => data.servicio === servicio.toUpperCase() && Number.isInteger(data.total)
+    && Number.isInteger(data.sin_etiqueta) && Array.isArray(data.categorias), {
+    filtro_agente: textoKpi,
+    filtro_jefe: textoKpi,
+    filtro_lider_sin_asignar: valor => typeof valor === 'boolean',
+    filtro_contacto: valor => ['PRIMERO', 'SEGUNDO'].includes(valor),
+    nivel: enteroEntre(1, 4),
+    limite: enteroEntre(1, 50)
+  }, 'filtro_servicio');
+registrarConsultaKpi('/kpis/fcr/detalle', 'consultar_fcr_detalle', 'el detalle FCR',
+  (data, servicio) => data.servicio === servicio.toUpperCase() && Number.isInteger(data.total)
+    && Number.isInteger(data.pagina) && Array.isArray(data.registros), {
+    filtro_agente: textoKpi,
+    filtro_jefe: textoKpi,
+    filtro_lider_sin_asignar: valor => typeof valor === 'boolean',
+    filtro_recall: valor => ['CON_RECALL', 'SIN_RECALL'].includes(valor),
+    filtro_tab_contacto: valor => ['PRIMERO', 'SEGUNDO'].includes(valor),
+    filtro_tab_nivel: enteroEntre(1, 4),
+    filtro_tab: textoKpi,
+    busqueda: textoKpi,
+    pagina: enteroEntre(1, 100000),
+    tamano_pagina: enteroEntre(1, 200)
+  }, 'filtro_servicio');
+
 // Obtener métricas en formato CSV
 router.get("/metricas", async (req, res) => {
   const { data, error } = await supabase.rpc('generar_csv_agentes');

@@ -14,6 +14,13 @@ const ALLOWED_STATUSES = new Set([
   'Cancelado Duplicado',
   'Cancelado No Corresponde'
 ]);
+const ALLOWED_CONTACT_STATUS = new Set([
+  'Contactado OK',
+  'No contactado',
+  'Sin respuesta',
+  'Ya se contacto',
+  'N/A'
+]);
 const MAX_LENGTHS = {
   canal: 120,
   usuario: 80,
@@ -220,6 +227,14 @@ router.patch('/actualizarEstadoTicketeraDegra', requireDegraTool, async (req, re
   if (numeroIt === undefined || (numeroIt && numeroIt.length > 100)) {
     return res.status(400).json({ error: 'El número de IT debe ser texto y no puede superar los 100 caracteres.' });
   }
+  const contacto = req.body?.contacto === undefined || req.body?.contacto === null
+    ? null
+    : typeof req.body.contacto === 'string'
+      ? req.body.contacto.trim() || null
+      : undefined;
+  if (contacto === undefined || (contacto !== null && !ALLOWED_CONTACT_STATUS.has(contacto))) {
+    return res.status(400).json({ error: 'Seleccioná una opción válida para Contacto.' });
+  }
 
   try {
     const { data: caso, error: caseError } = await supabase.schema('tickets_soporte')
@@ -237,7 +252,8 @@ router.patch('/actualizarEstadoTicketeraDegra', requireDegraTool, async (req, re
       p_estado: estado,
       p_observacion: observacion,
       p_email: typeof req.user?.email === 'string' ? req.user.email.trim() : null,
-      p_numero_it: numeroIt
+      p_numero_it: numeroIt,
+      p_contacto: contacto
     });
     if (error) {
       console.error('Error al actualizar ticket de Degra:', error);

@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const compression = require("compression");
 
 // Importar configuración
 const corsOptions = require('./src/config/cors');
@@ -45,6 +46,7 @@ const port = process.env.PORT || 5000;
 // Configuración de middlewares globales
 app.use(cookieParser());
 app.use(cors(corsOptions));
+app.use(compression());
 app.use(express.json({ limit: '10kb' }));
 
 // ────────────────────────────────────────────────────────────────────────────
