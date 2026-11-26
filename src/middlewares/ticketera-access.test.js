@@ -429,6 +429,38 @@ test('combines Degra multiselect and classification filters before returning res
   }
 });
 
+test('updates and filters new Degra statuses and current contact', async () => {
+  tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+  caseType = 4;
+  for (const estado of ['NO se resuelve', 'Otro Proveedor']) {
+    calls = [];
+    const response = await request('/actualizarEstadoTicketeraDegra', {
+      method: 'PATCH', range: 5,
+      body: { caso_id: 23, estado, observacion: 'Seguimiento', contacto: 'Rellamar' }
+    });
+    assert.equal(response.status, 200);
+    const rpc = calls.find(({ name }) => name === 'actualizar_estado_ticketera');
+    assert.equal(rpc.params.p_estado, estado);
+    assert.equal(rpc.params.p_contacto, 'Rellamar');
+  }
+  listResult = [
+    { id: 1, tipo_ticketera: 4, tipo_reg: 'TICKET', estado_actual: 'NO se resuelve', email: 'real@example.com',
+      degra: { contacto: 'Rellamar' }, observaciones: [] },
+    { id: 2, tipo_ticketera: 4, tipo_reg: 'ITRACKER', estado_actual: 'Otro Proveedor', email: 'real@example.com',
+      degra: { contacto: 'Rellamar' }, observaciones: [] },
+    { id: 3, tipo_ticketera: 4, tipo_reg: 'TICKET', estado_actual: 'Otro Proveedor', email: 'real@example.com',
+      degra: { contacto: 'Sin respuesta' }, observaciones: [{ contacto: 'Rellamar' }] },
+    { id: 4, tipo_ticketera: 4, tipo_reg: 'TICKET', estado_actual: 'En gestión', email: 'real@example.com',
+      degra: { contacto: 'Rellamar' }, observaciones: [] }
+  ];
+  const query = new URLSearchParams({
+    servicio: 'DEGRA', scope: 'mine', statuses: 'no_se_resuelve,otro_proveedor', contacto: 'Rellamar'
+  });
+  const response = await request(`/obtenerTickets?${query}`, { range: 0 });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).map((item) => item.id), [1, 2]);
+});
+
 function request(path, { range = 0, email = 'real@example.com', role = 'Perfil', method = 'GET', body, token, form } = {}) {
   const session = token ?? jwt.sign({
     email, rango: range, herramientas: tools, segmento: ['VENTAS MOVIL'], usuario: 'U123456', rol: role

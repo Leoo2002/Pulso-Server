@@ -535,7 +535,7 @@ router.get('/obtenerTickets', async (req, res) => {
   const scope = typeof req.query.scope === 'string' ? req.query.scope.trim().toLowerCase() : 'all';
   const type = typeof req.query.type === 'string' ? req.query.type.trim().toLowerCase() : '';
   const status = typeof req.query.status === 'string' ? req.query.status.trim().toLowerCase() : '';
-  const degraFilterNames = ['types', 'statuses', 'requiereContacto', 'motivoPrincipal', 'submotivo'];
+  const degraFilterNames = ['types', 'statuses', 'requiereContacto', 'contacto', 'motivoPrincipal', 'submotivo'];
   const userCode = typeof req.query.userCode === 'string' ? req.query.userCode.trim().toLowerCase() : '';
   const leader = typeof req.query.lider === 'string' ? req.query.lider.trim() : '';
   const dateFrom = typeof req.query.dateFrom === 'string' ? req.query.dateFrom : '';
@@ -554,11 +554,12 @@ router.get('/obtenerTickets', async (req, res) => {
   const types = req.query.types ? req.query.types.split(',') : [];
   const statuses = req.query.statuses ? req.query.statuses.split(',') : [];
   const requiereContacto = req.query.requiereContacto || '';
+  const contacto = req.query.contacto?.trim() || '';
   const motivoPrincipal = req.query.motivoPrincipal?.trim() || '';
   const submotivo = req.query.submotivo?.trim() || '';
   if (types.some((value) => !ALLOWED_TYPES.has(value))
     || !['', 'true', 'false'].includes(requiereContacto)
-    || motivoPrincipal.length > 150 || submotivo.length > 150) {
+    || contacto.length > 100 || motivoPrincipal.length > 150 || submotivo.length > 150) {
     return res.status(400).json({ error: 'Los filtros de Degra no son válidos.' });
   }
   if (search.length > 100) {
@@ -591,7 +592,8 @@ router.get('/obtenerTickets', async (req, res) => {
   const statusFilters = statuses.map(normalizeStatus);
   const searchableStatuses = ticketera === 'VENTAS'
     ? new Set([...ALLOWED_SALES_STATUSES].map(normalizeStatus))
-    : new Set([...ALLOWED_STATUSES, 'pendiente_bo']
+    : new Set([...ALLOWED_STATUSES, 'pendiente_bo',
+      ...(ticketera === 'DEGRA' ? ['no_se_resuelve', 'otro_proveedor'] : [])]
       .map(normalizeStatus));
   if ((status && !searchableStatuses.has(statusFilter))
     || statusFilters.some((value) => !searchableStatuses.has(value))) {
@@ -664,6 +666,7 @@ router.get('/obtenerTickets', async (req, res) => {
           : typeof contactValue === 'string' && ['true', 'si', 'sí', 'false', 'no'].includes(contactValue.trim().toLowerCase())
             ? ['true', 'si', 'sí'].includes(contactValue.trim().toLowerCase()) : null;
         if (requiereContacto && contact !== (requiereContacto === 'true')) return false;
+        if (contacto && (typeof degra.contacto !== 'string' || degra.contacto.trim() !== contacto)) return false;
         if (motivoPrincipal && degra.motivo_principal !== motivoPrincipal) return false;
         if (submotivo && degra.submotivo !== submotivo) return false;
       }

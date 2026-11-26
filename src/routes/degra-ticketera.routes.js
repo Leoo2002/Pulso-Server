@@ -12,14 +12,17 @@ const ALLOWED_STATUSES = new Set([
   'Reportado',
   'Resuelto',
   'Cancelado Duplicado',
-  'Cancelado No Corresponde'
+  'Cancelado No Corresponde',
+  'NO se resuelve',
+  'Otro Proveedor'
 ]);
 const ALLOWED_CONTACT_STATUS = new Set([
   'Contactado OK',
   'No contactado',
   'Sin respuesta',
   'Ya se contacto',
-  'N/A'
+  'N/A',
+  'Rellamar'
 ]);
 const MAX_LENGTHS = {
   canal: 120,
