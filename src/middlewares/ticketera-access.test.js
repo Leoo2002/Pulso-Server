@@ -384,6 +384,51 @@ test('saves the Degra IT number through the state RPC', async () => {
   });
 });
 
+test('combines Degra multiselect and classification filters before returning results', async () => {
+  tools = [{ id_herramienta: 12, nombre: 'TICKETERA_ABONO_DEGRA' }];
+  const makeCase = (id, tipo_reg, estado_actual, requiere_contacto, motivo_principal, submotivo) => ({
+    id, tipo_reg, estado_actual, tipo_ticketera: 4, fecha_creacion: '2026-11-20T12:00:00Z',
+    email: 'real@example.com',
+    degra: { requiere_contacto, motivo_principal, submotivo }
+  });
+  listResult = [
+    makeCase(1, 'TICKET', 'Pendiente de BO', false, 'Pagos y Suspensiones', 'Rehabilitación urgente de línea'),
+    makeCase(2, 'ITRACKER', 'En gestión', 'false', 'Pagos y Suspensiones', 'Rehabilitación urgente de línea'),
+    makeCase(3, 'TICKET', 'Resuelto', false, 'Pagos y Suspensiones', 'Rehabilitación urgente de línea'),
+    makeCase(4, 'TICKET', 'En gestión', null, 'Pagos y Suspensiones', 'Rehabilitación urgente de línea'),
+    makeCase(5, 'TICKET', 'En gestión', false, 'Otro', 'Rehabilitación urgente de línea'),
+    makeCase(6, 'TICKET', 'En gestión', false, 'Pagos y Suspensiones', 'Otro'),
+    makeCase(7, 'TICKET', 'Reportado', true, 'Pagos y Suspensiones', 'Rehabilitación urgente de línea')
+  ];
+  const query = new URLSearchParams({
+    servicio: 'DEGRA', scope: 'mine', types: 'ticket,itracker',
+    statuses: 'pendiente_bo,en_curso', requiereContacto: 'false',
+    motivoPrincipal: 'Pagos y Suspensiones', submotivo: 'Rehabilitación urgente de línea'
+  });
+  const response = await request(`/obtenerTickets?${query}`, { range: 0 });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).map((item) => item.id), [1, 2]);
+
+  const allResponse = await request('/obtenerTickets?servicio=DEGRA&scope=mine', { range: 0 });
+  assert.equal(allResponse.status, 200);
+  assert.equal((await allResponse.json()).length, 7);
+
+  const yesQuery = new URLSearchParams({
+    servicio: 'DEGRA', scope: 'mine', statuses: 'pendiente', requiereContacto: 'true'
+  });
+  const yesResponse = await request(`/obtenerTickets?${yesQuery}`, { range: 0 });
+  assert.equal(yesResponse.status, 200);
+  assert.deepEqual((await yesResponse.json()).map((item) => item.id), [7]);
+
+  const unscopedResponse = await request('/obtenerTickets?servicio=DEGRA&requiereContacto=false', { range: 0 });
+  assert.equal(unscopedResponse.status, 403);
+
+  for (const invalid of ['types=ticket,invalido', 'statuses=en_curso,invalido', 'requiereContacto=maybe']) {
+    const invalidResponse = await request(`/obtenerTickets?servicio=DEGRA&scope=mine&${invalid}`, { range: 0 });
+    assert.equal(invalidResponse.status, 400);
+  }
+});
+
 function request(path, { range = 0, email = 'real@example.com', role = 'Perfil', method = 'GET', body, token, form } = {}) {
   const session = token ?? jwt.sign({
     email, rango: range, herramientas: tools, segmento: ['VENTAS MOVIL'], usuario: 'U123456', rol: role

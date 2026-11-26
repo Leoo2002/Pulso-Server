@@ -138,7 +138,7 @@ test('FCR rejects invalid filters and makes missing migrations and malformed res
   result = { data: null, error: { code: 'PGRST202', message: 'Missing function' } };
   const missing = await post(filtros, '0', '', '/kpis/fcr');
   assert.equal(missing.status, 503);
-  assert.match((await missing.json()).error, /migración de FCR/);
+  assert.match((await missing.json()).error, /Contactá al equipo de soporte/);
   result = { data: { servicio: 'OTRO', periodo: {}, general: { cantidadRegistros: 0,
     totalInteracciones: 0, totalRecallEfectivo: 0 }, por_lider: [] }, error: null };
   assert.equal((await post(filtros, '0', '', '/kpis/fcr')).status, 502);

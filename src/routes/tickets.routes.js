@@ -535,6 +535,7 @@ router.get('/obtenerTickets', async (req, res) => {
   const scope = typeof req.query.scope === 'string' ? req.query.scope.trim().toLowerCase() : 'all';
   const type = typeof req.query.type === 'string' ? req.query.type.trim().toLowerCase() : '';
   const status = typeof req.query.status === 'string' ? req.query.status.trim().toLowerCase() : '';
+  const degraFilterNames = ['types', 'statuses', 'requiereContacto', 'motivoPrincipal', 'submotivo'];
   const userCode = typeof req.query.userCode === 'string' ? req.query.userCode.trim().toLowerCase() : '';
   const leader = typeof req.query.lider === 'string' ? req.query.lider.trim() : '';
   const dateFrom = typeof req.query.dateFrom === 'string' ? req.query.dateFrom : '';
@@ -545,6 +546,20 @@ router.get('/obtenerTickets', async (req, res) => {
   }
   if (!hasTicketeraAccess(req, ticketera)) {
     return res.status(403).json({ error: 'No tienes permisos para acceder a esta ticketera.' });
+  }
+  if (degraFilterNames.some((name) => req.query[name] !== undefined
+    && (ticketera !== 'DEGRA' || typeof req.query[name] !== 'string'))) {
+    return res.status(400).json({ error: 'Los filtros de Degra no son válidos.' });
+  }
+  const types = req.query.types ? req.query.types.split(',') : [];
+  const statuses = req.query.statuses ? req.query.statuses.split(',') : [];
+  const requiereContacto = req.query.requiereContacto || '';
+  const motivoPrincipal = req.query.motivoPrincipal?.trim() || '';
+  const submotivo = req.query.submotivo?.trim() || '';
+  if (types.some((value) => !ALLOWED_TYPES.has(value))
+    || !['', 'true', 'false'].includes(requiereContacto)
+    || motivoPrincipal.length > 150 || submotivo.length > 150) {
+    return res.status(400).json({ error: 'Los filtros de Degra no son válidos.' });
   }
   if (search.length > 100) {
     return res.status(400).json({ error: 'La búsqueda no puede superar los 100 caracteres.' });
@@ -573,11 +588,13 @@ router.get('/obtenerTickets', async (req, res) => {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[\s-]+/g, '_');
   const statusFilter = normalizeStatus(status);
+  const statusFilters = statuses.map(normalizeStatus);
   const searchableStatuses = ticketera === 'VENTAS'
     ? new Set([...ALLOWED_SALES_STATUSES].map(normalizeStatus))
-    : new Set([...ALLOWED_STATUSES, ...(ticketera === 'ONBOARDING' ? ['pendiente_bo'] : [])]
+    : new Set([...ALLOWED_STATUSES, 'pendiente_bo']
       .map(normalizeStatus));
-  if (status && !searchableStatuses.has(statusFilter)) {
+  if ((status && !searchableStatuses.has(statusFilter))
+    || statusFilters.some((value) => !searchableStatuses.has(value))) {
     return res.status(400).json({ error: 'El estado del ticket no es válido.' });
   }
   if (userCode && ticketera !== 'ONBOARDING') {
@@ -641,17 +658,30 @@ router.get('/obtenerTickets', async (req, res) => {
         if (dates.from && (!createdAt || createdAt < dates.from)) return false;
         if (dates.to && (!createdAt || createdAt > dates.to)) return false;
         if (leader && ticketLeader !== leader) return false;
+        const degra = ticket.degra && typeof ticket.degra === 'object' ? ticket.degra : {};
+        const contactValue = degra.requiere_contacto;
+        const contact = typeof contactValue === 'boolean' ? contactValue
+          : typeof contactValue === 'string' && ['true', 'si', 'sí', 'false', 'no'].includes(contactValue.trim().toLowerCase())
+            ? ['true', 'si', 'sí'].includes(contactValue.trim().toLowerCase()) : null;
+        if (requiereContacto && contact !== (requiereContacto === 'true')) return false;
+        if (motivoPrincipal && degra.motivo_principal !== motivoPrincipal) return false;
+        if (submotivo && degra.submotivo !== submotivo) return false;
       }
       const rawType = String(ticket.tipo_reg || ticket.type || ticket.tipo || '').trim().toLowerCase();
       const ticketType = rawType === 'it' ? 'itracker' : rawType;
       if (type && ticketType !== type) return false;
+      if (types.length && !types.includes(ticketType)) return false;
       const rawStatus = String(ticket.estado_actual || ticket.estado || ticket.status || '');
       const normalizedStatus = normalizeStatus(rawStatus);
       const statusAliases = {
         en_gestion: 'en_curso',
-        pendiente_de_bo: 'pendiente_bo'
+        pendiente_de_bo: 'pendiente_bo',
+        ...(ticketera === 'DEGRA' ? { reportado: 'pendiente' } : {}),
+        '❌_cancelado_duplicado': 'cancelado_duplicado',
+        '🚫_cancelado_no_corresponde': 'cancelado_no_corresponde'
       };
       if (status && (statusAliases[normalizedStatus] || normalizedStatus) !== statusFilter) return false;
+      if (statusFilters.length && !statusFilters.includes(statusAliases[normalizedStatus] || normalizedStatus)) return false;
       const code = String(ticket.usuario || ticket.user_code || ticket.usuario_u_teco || ticket.uteco || '')
         .trim()
         .toLowerCase();

@@ -77,7 +77,7 @@ function registrarConsultaKpi(ruta, rpc, nombre, validarRespuesta, extras = {}, 
       console.error(`Tiempo de espera agotado en ${rpc} (30 segundos).`);
       controlador.abort();
       if (!res.destroyed) {
-        res.status(504).json({ error: `La consulta de ${nombre} demoró más de 30 segundos. Reintentá; si se repite, hay que revisar su rendimiento en Supabase.` });
+        res.status(504).json({ error: `La consulta de ${nombre} demoró más de 30 segundos. Reintentá; si se repite, contactá al equipo de soporte.` });
       }
     }, 30000);
     const cancelar = () => {
@@ -93,7 +93,7 @@ function registrarConsultaKpi(ruta, rpc, nombre, validarRespuesta, extras = {}, 
       if (error) {
         console.error(`Error en ${rpc}:`, error);
         if (error.code === 'PGRST202' && rpc.startsWith('consultar_fcr_')) {
-          return res.status(503).json({ error: 'Faltan las funciones optimizadas de FCR en Supabase. Ejecutá la migración de FCR.' });
+          return res.status(503).json({ error: 'Faltan las funciones necesarias para consultar FCR. Contactá al equipo de soporte.' });
         }
         return res.status(error.code === 'P0001' ? 400 : 500).json({
           error: error.code === 'P0001' ? error.message : `No se pudo consultar ${nombre}.`
